@@ -18,6 +18,15 @@ impl Sampler {
     }
 
     pub fn sample(&mut self, logits: &[f32]) -> utok {
-        todo!()
+        if self.temperature == 0.0 {
+            logits
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .unwrap()
+                .0 as _
+        } else {
+            todo!()
+        }
     }
 }

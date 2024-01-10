@@ -191,7 +191,7 @@ fn matmul(xout: &mut [f32], x: &[f32], w: &[f32]) {
 }
 
 fn softmax(x: &mut [f32]) {
-    let max = x.iter().cloned().reduce(|a, b| a.max(b)).unwrap();
+    let max = *x.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
     let sum = x
         .iter_mut()
         .map(|x| {
