@@ -106,4 +106,5 @@ fn generate(
     steps: usize,
 ) {
     let prompt_tokens = tokenizer.encode(&prompt, true, false);
+    println!("prompt_tokens: {prompt_tokens:?}");
 }
