@@ -1,7 +1,10 @@
 ﻿mod config;
 mod weights;
 
-use super::tokenizer::utok;
+use super::{
+    kernel::{matmul, rmsnorm, rmsnorm_inplace, softmax},
+    tokenizer::utok,
+};
 use config::Config;
 use memmap2::Mmap;
 use std::{
@@ -44,7 +47,7 @@ impl Transformer {
         Config::map(&self.mmap).0.vocab_size()
     }
 
-    pub fn forward(&mut self, token: utok, pos: upos) -> &[f32] {
+    pub fn forward(&mut self, token: utok, pos: upos) -> &mut [f32] {
         let (config, _) = Config::map(&self.mmap);
         let w = Weights::new(&self.mmap);
         let s = &mut self.state;
@@ -149,57 +152,8 @@ impl Transformer {
 
         matmul(&mut s.logits, &s.x, &w.wcls);
 
-        return &s.logits;
+        return &mut s.logits;
     }
-}
-
-fn rmsnorm(o: &mut [f32], x: &[f32], weight: &[f32]) {
-    // ss = (Σx^2 / n + δ)^(-1/2)
-    let ss = x
-        .iter()
-        .map(|x| x * x)
-        .sum::<f32>()
-        .div(x.len() as f32)
-        .add(1e-5)
-        .sqrt()
-        .recip();
-    for ((o, &w), &x) in o.iter_mut().zip(x).zip(weight) {
-        *o = w * (ss * x);
-    }
-}
-
-fn rmsnorm_inplace(x: &mut [f32], weight: &[f32]) {
-    // ss = (Σx^2 / n + δ)^(-1/2)
-    let ss = x
-        .iter()
-        .map(|x| x * x)
-        .sum::<f32>()
-        .div(x.len() as f32)
-        .add(1e-5)
-        .sqrt()
-        .recip();
-    for (x, &w) in x.iter_mut().zip(weight) {
-        *x = w * (ss * *x);
-    }
-}
-
-fn matmul(xout: &mut [f32], x: &[f32], w: &[f32]) {
-    let n = x.len();
-    xout.iter_mut().enumerate().for_each(|(i, y)| {
-        *y = w[i * n..].iter().zip(x).map(|(&w, &x)| w * x).sum::<f32>();
-    });
-}
-
-fn softmax(x: &mut [f32]) {
-    let max = *x.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    let sum = x
-        .iter_mut()
-        .map(|x| {
-            *x = (*x - max).exp();
-            *x
-        })
-        .sum::<f32>();
-    x.iter_mut().for_each(|x| *x /= sum);
 }
 
 struct RunState {

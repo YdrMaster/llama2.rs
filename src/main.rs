@@ -1,10 +1,16 @@
+mod kernel;
 mod sampler;
 mod tokenizer;
 mod transformer;
 
 use core::panic;
 use sampler::Sampler;
-use std::{fs::canonicalize, io::Write, path::PathBuf, time::Instant};
+use std::{
+    fs::canonicalize,
+    io::Write,
+    path::PathBuf,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 use tokenizer::{Tokenizer, BOS};
 use transformer::{upos, Transformer};
 
@@ -60,7 +66,10 @@ fn main() {
     }
 
     if args.rng_seed == 0 {
-        args.rng_seed = Instant::now().elapsed().as_millis() as u64;
+        args.rng_seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
     }
     if args.temperature < 0.0 {
         args.temperature = 0.0;
@@ -142,7 +151,7 @@ fn generate(
             let end = Instant::now();
             println!(
                 "achieved tok/s: {}",
-                (pos - 1) as f64 / (end - start).as_secs() as f64
+                (pos - 1) as f64 / (end - start).as_secs_f64()
             )
         }
     }
