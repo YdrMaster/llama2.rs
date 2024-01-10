@@ -1,5 +1,5 @@
 ﻿use memmap2::Mmap;
-use std::{fs::File, path::Path};
+use std::{fs::File, path::Path, vec};
 
 /// `utok` for token id.
 #[allow(non_camel_case_types)]
@@ -101,7 +101,16 @@ impl Tokenizer {
     }
 
     pub fn decode(&self, token: utok, next: utok) -> String {
-        todo!()
+        let mut piece = self.map_str(next);
+        if token == BOS && piece.starts_with(" ") {
+            piece = &piece[1..];
+        }
+        if let Some(byte) = piece.strip_prefix("<0x").and_then(|s| s.strip_suffix(">")) {
+            let byte = u8::from_str_radix(byte, 16).unwrap();
+            String::from_utf8(vec![byte]).unwrap()
+        } else {
+            piece.to_owned()
+        }
     }
 
     #[inline]

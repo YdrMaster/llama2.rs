@@ -17,7 +17,7 @@ impl Sampler {
         }
     }
 
-    pub fn sample(&mut self, logits: f32) -> utok {
+    pub fn sample(&mut self, logits: &[f32]) -> utok {
         todo!()
     }
 }

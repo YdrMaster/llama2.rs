@@ -4,7 +4,7 @@ mod transformer;
 
 use core::panic;
 use sampler::Sampler;
-use std::{fs::canonicalize, path::PathBuf, time::Instant};
+use std::{fs::canonicalize, io::Write, path::PathBuf, time::Instant};
 use tokenizer::{Tokenizer, BOS};
 use transformer::{upos, Transformer};
 
@@ -116,6 +116,7 @@ fn generate(
     let mut pos: upos = 0;
     while pos < steps {
         let logits = transformer.forward(token, pos);
+        // println!("logits: {logits:?}");
 
         let next = match prompt_tokens.get(pos as usize + 1) {
             Some(&tokid) => tokid,
@@ -129,6 +130,7 @@ fn generate(
 
         let piece = tokenizer.decode(token, next);
         print!("{piece}");
+        std::io::stdout().flush().unwrap();
         token = next;
 
         start.get_or_insert_with(|| Instant::now());

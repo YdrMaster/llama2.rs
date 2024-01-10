@@ -2,18 +2,18 @@
 use memmap2::Mmap;
 
 pub(super) struct Weights<'a> {
-    token_embedding_table: &'a [f32],
-    rms_att_weight: &'a [f32],
-    rms_ffn_weight: &'a [f32],
-    wq: &'a [f32],
-    wk: &'a [f32],
-    wv: &'a [f32],
-    wo: &'a [f32],
-    w1: &'a [f32],
-    w2: &'a [f32],
-    w3: &'a [f32],
-    rms_final_weight: &'a [f32],
-    wcls: &'a [f32],
+    pub token_embedding_table: &'a [f32],
+    pub rms_att_weight: &'a [f32],
+    pub rms_ffn_weight: &'a [f32],
+    pub wq: &'a [f32],
+    pub wk: &'a [f32],
+    pub wv: &'a [f32],
+    pub wo: &'a [f32],
+    pub w1: &'a [f32],
+    pub w2: &'a [f32],
+    pub w3: &'a [f32],
+    pub rms_final_weight: &'a [f32],
+    pub wcls: &'a [f32],
 }
 
 impl<'a> Weights<'a> {
@@ -28,7 +28,7 @@ impl<'a> Weights<'a> {
         let shared_weight = config.shared_weight();
         let vocab_size = config.vocab_size();
         let seq_len = config.seq_len();
-        let head_size = dim / n_heads;
+        let head_size = config.head_size();
 
         let (head, data, tail) = unsafe { data.align_to::<f32>() };
         assert!(head.is_empty() && tail.is_empty());
@@ -44,13 +44,12 @@ impl<'a> Weights<'a> {
         let (w2, data) = data.split_at(n_layers * hidden_dim * dim);
         let (w3, data) = data.split_at(n_layers * dim * hidden_dim);
         let (rms_final_weight, data) = data.split_at(dim);
-        let data = &data[seq_len * head_size / 2..];
-        let data = &data[seq_len * head_size / 2..];
+        let data = &data[seq_len * head_size / 2 * 2..];
         let wcls = if shared_weight {
             token_embedding_table
         } else {
             let (wcls, data) = data.split_at(vocab_size * dim);
-            assert!(data.is_empty());
+            debug_assert!(data.is_empty());
             wcls
         };
 
