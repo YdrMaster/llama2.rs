@@ -1,34 +1,36 @@
 ﻿use memmap2::Mmap;
 use std::{fs::File, path::Path};
 
+/// Tokenizer 的功能是建立 token 字符串和一个序号之间的关系。
 pub(super) struct Tokenizer {
+    /// tokenizer 文件的内存映射。
     mmap: Mmap,
-    vocab_offset: Vec<usize>,
-    sorted_vocab: Vec<TokenIndex>,
+    /// 保存每个序号对应的对象在文件中的偏移，用于从序号查询 token 字符串。
+    words_offset: Vec<usize>,
+    /// 保存根据 token 字符串字典序排序的序号，用于从 token 字符串查询序号。
+    sorted_indices: Vec<u32>,
 }
 
 impl Tokenizer {
     pub fn new(tokenizer: impl AsRef<Path>, vocab_size: usize) -> Self {
         let mmap = unsafe { Mmap::map(&File::open(tokenizer).unwrap()) }.unwrap();
 
-        let mut vocab_offset = Vec::<usize>::with_capacity(vocab_size);
-        let mut sorted_vocab = Vec::<TokenIndex>::with_capacity(vocab_size);
+        let mut words_offset = Vec::<usize>::with_capacity(vocab_size);
+        let mut sorted_indices = Vec::<u32>::with_capacity(vocab_size);
         {
             let mut offset = std::mem::size_of::<u32>();
-            for index in 0..vocab_size {
-                let ptr = mmap.as_ref()[offset..].as_ptr();
-                let header = unsafe { &*ptr.cast::<TokenHeader>() };
-                vocab_offset.push(offset);
-                sorted_vocab.push(TokenIndex { index, offset });
-                offset += std::mem::size_of::<TokenHeader>() + header.len as usize;
+            for index in 0..vocab_size as u32 {
+                words_offset.push(offset);
+                sorted_indices.push(index);
+                offset += file::item_len(&mmap, offset);
             }
         }
-        sorted_vocab.sort_by_key(|token| map_token(&mmap, token).1);
+        sorted_indices.sort_by_key(|&index| file::map(&mmap, words_offset[index as usize]).0);
 
         Self {
             mmap,
-            vocab_offset,
-            sorted_vocab,
+            words_offset,
+            sorted_indices,
         }
     }
 
@@ -51,12 +53,12 @@ impl Tokenizer {
             tokens.push(BOS);
         }
         if !text.is_empty() {
-            tokens.push(self.find_token(" ").unwrap().index as _)
+            tokens.push(self.find_token(" ").unwrap())
         }
 
         text.chars().map(|c| c.to_string()).for_each(|c| {
-            if let Some(token) = self.find_token(&c) {
-                tokens.extend([token.index as u32]);
+            if let Some(index) = self.find_token(&c) {
+                tokens.extend([index]);
             } else {
                 tokens.extend(c.bytes().map(byte_index));
             }
@@ -67,11 +69,11 @@ impl Tokenizer {
             let mut replacement = None;
             for (i, pair) in tokens.windows(2).enumerate() {
                 let pair = format!("{}{}", self.map_str(pair[0]), self.map_str(pair[1]));
-                if let Some(token) = self.find_token(&pair) {
-                    let score = map_token(&self.mmap, token).0.score;
+                if let Some(index) = self.find_token(&pair) {
+                    let (_, score) = file::map(&self.mmap, self.words_offset[index as usize]);
                     if score > best_score {
                         best_score = score;
-                        replacement = Some((i, token.index as u32));
+                        replacement = Some((i, index));
                     }
                 }
             }
@@ -94,35 +96,58 @@ impl Tokenizer {
     }
 
     #[inline]
-    fn find_token(&self, token: &str) -> Option<&TokenIndex> {
-        self.sorted_vocab
-            .binary_search_by_key(&token, |token| map_token(&self.mmap, token).1)
+    fn find_token(&self, token: &str) -> Option<u32> {
+        self.sorted_indices
+            .binary_search_by_key(&token, |&index| self.map_str(index))
             .ok()
-            .map(|idx| &self.sorted_vocab[idx])
+            .map(|idx| self.sorted_indices[idx])
     }
 
     #[inline]
     fn map_str(&self, index: u32) -> &str {
-        let offset = self.vocab_offset[index as usize];
-        map_token(&self.mmap, &TokenIndex { index: 0, offset }).1
+        file::map(&self.mmap, self.words_offset[index as usize]).0
     }
 }
 
-#[repr(C)]
-struct TokenHeader {
-    score: f32,
-    len: u32,
-}
+mod file {
+    //! 文件结构：
+    //!
+    //! ```plain_text
+    //! (
+    //!     max_token_len:u32,
+    //!     [(
+    //!         score: f32,
+    //!         len  : u32,
+    //!         text : [u8; len]
+    //!     ); vocab_size]
+    //! )
+    //! ```
 
-struct TokenIndex {
-    index: usize,
-    offset: usize,
-}
+    use memmap2::Mmap;
 
-#[inline]
-fn map_token<'a>(mmap: &'a Mmap, token: &TokenIndex) -> (&'a TokenHeader, &'a str) {
-    let slice = &mmap.as_ref()[token.offset..];
-    let header = unsafe { &*slice.as_ptr().cast::<TokenHeader>() };
-    let slice = &slice[std::mem::size_of::<TokenHeader>()..][..header.len as usize];
-    (header, unsafe { std::str::from_utf8_unchecked(slice) })
+    #[repr(C)]
+    struct TokenHeader {
+        score: f32,
+        len: u32,
+    }
+
+    /// 获取 `offset` 处对象的长度。
+    #[inline]
+    pub fn item_len(mmap: &Mmap, offset: usize) -> usize {
+        let slice = &mmap.as_ref()[offset..];
+        let header = unsafe { slice.as_ptr().cast::<TokenHeader>().read_unaligned() };
+        std::mem::size_of::<TokenHeader>() + header.len as usize
+    }
+
+    /// 获取 `offset` 处对象的内容。
+    #[inline]
+    pub fn map<'a>(mmap: &'a Mmap, offset: usize) -> (&'a str, f32) {
+        let slice = &mmap.as_ref()[offset..];
+        let header = unsafe { slice.as_ptr().cast::<TokenHeader>().read_unaligned() };
+        let slice = &slice[std::mem::size_of::<TokenHeader>()..][..header.len as usize];
+        (
+            unsafe { std::str::from_utf8_unchecked(slice) },
+            header.score,
+        )
+    }
 }
