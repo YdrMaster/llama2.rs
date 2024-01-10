@@ -1,10 +1,15 @@
 ﻿mod config;
 mod weights;
 
+use crate::tokenizer::utok;
 use config::Config;
 use memmap2::Mmap;
 use std::{fs::File, path::Path};
 use weights::Weights;
+
+/// `upos` for position id.
+#[allow(non_camel_case_types)]
+pub(super) type upos = u32;
 
 pub(super) struct Transformer {
     state: RunState,
@@ -27,6 +32,10 @@ impl Transformer {
     #[inline]
     pub fn vocab_size(&self) -> usize {
         Config::map(&self.mmap).0.vocab_size()
+    }
+
+    pub fn forward(&mut self, token: utok, pos: upos) -> f32 {
+        todo!()
     }
 }
 

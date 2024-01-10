@@ -1,4 +1,6 @@
-﻿pub(super) struct Sampler {
+﻿use super::tokenizer::utok;
+
+pub(super) struct Sampler {
     vocab_size: usize,
     temperature: f32,
     top_p: f32,
@@ -13,5 +15,9 @@ impl Sampler {
             top_p,
             rng_state: rng_seed,
         }
+    }
+
+    pub fn sample(&mut self, logits: f32) -> utok {
+        todo!()
     }
 }

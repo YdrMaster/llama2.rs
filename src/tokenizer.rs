@@ -1,6 +1,14 @@
 ﻿use memmap2::Mmap;
 use std::{fs::File, path::Path};
 
+/// `utok` for token id.
+#[allow(non_camel_case_types)]
+pub(super) type utok = u32;
+
+pub(super) const _UNKNOWN: utok = 0;
+pub(super) const BOS: utok = 1;
+pub(super) const EOS: utok = 2;
+
 /// Tokenizer 的功能是建立 token 字符串和一个序号之间的关系。
 pub(super) struct Tokenizer {
     /// tokenizer 文件的内存映射。
@@ -8,7 +16,7 @@ pub(super) struct Tokenizer {
     /// 保存每个序号对应的对象在文件中的偏移，用于从序号查询 token 字符串。
     words_offset: Vec<usize>,
     /// 保存根据 token 字符串字典序排序的序号，用于从 token 字符串查询序号。
-    sorted_indices: Vec<u32>,
+    sorted_indices: Vec<utok>,
 }
 
 impl Tokenizer {
@@ -16,10 +24,10 @@ impl Tokenizer {
         let mmap = unsafe { Mmap::map(&File::open(tokenizer).unwrap()) }.unwrap();
 
         let mut words_offset = Vec::<usize>::with_capacity(vocab_size);
-        let mut sorted_indices = Vec::<u32>::with_capacity(vocab_size);
+        let mut sorted_indices = Vec::<utok>::with_capacity(vocab_size);
         {
             let mut offset = std::mem::size_of::<u32>();
-            for index in 0..vocab_size as u32 {
+            for index in 0..vocab_size as utok {
                 words_offset.push(offset);
                 sorted_indices.push(index);
                 offset += file::item_len(&mmap, offset);
@@ -39,16 +47,13 @@ impl Tokenizer {
         unsafe { *self.mmap.as_ptr().cast::<u32>() as usize }
     }
 
-    pub fn encode(&mut self, text: &str, bos: bool, eos: bool) -> Vec<u32> {
-        const _UNKNOWN: u32 = 0;
-        const BOS: u32 = 1;
-        const EOS: u32 = 2;
+    pub fn encode(&self, text: &str, bos: bool, eos: bool) -> Vec<utok> {
         #[inline(always)]
-        const fn byte_index(b: u8) -> u32 {
-            b as u32 + 3
+        const fn byte_index(b: u8) -> utok {
+            b as utok + 3
         }
 
-        let mut tokens = Vec::<u32>::with_capacity(text.len() + 2);
+        let mut tokens = Vec::<utok>::with_capacity(text.len() + 2);
         if bos {
             tokens.push(BOS);
         }
@@ -95,8 +100,12 @@ impl Tokenizer {
         tokens
     }
 
+    pub fn decode(&self, token: utok, next: utok) -> String {
+        todo!()
+    }
+
     #[inline]
-    fn find_token(&self, token: &str) -> Option<u32> {
+    fn find_token(&self, token: &str) -> Option<utok> {
         self.sorted_indices
             .binary_search_by_key(&token, |&index| self.map_str(index))
             .ok()
@@ -104,7 +113,7 @@ impl Tokenizer {
     }
 
     #[inline]
-    fn map_str(&self, index: u32) -> &str {
+    fn map_str(&self, index: utok) -> &str {
         file::map(&self.mmap, self.words_offset[index as usize]).0
     }
 }

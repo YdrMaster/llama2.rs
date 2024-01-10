@@ -5,8 +5,8 @@ mod transformer;
 use core::panic;
 use sampler::Sampler;
 use std::{fs::canonicalize, path::PathBuf, time::Instant};
-use tokenizer::Tokenizer;
-use transformer::Transformer;
+use tokenizer::{Tokenizer, BOS};
+use transformer::{upos, Transformer};
 
 fn main() {
     struct Args {
@@ -70,7 +70,7 @@ fn main() {
     }
 
     let mut transformer = Transformer::read_checkpoint(&args.check_point);
-    let mut tokenizer = Tokenizer::new(&args.tokenizer_path, transformer.vocab_size());
+    let tokenizer = Tokenizer::new(&args.tokenizer_path, transformer.vocab_size());
     let mut sampler = Sampler::new(
         transformer.vocab_size(),
         args.temperature,
@@ -80,7 +80,7 @@ fn main() {
 
     generate(
         &mut transformer,
-        &mut tokenizer,
+        &tokenizer,
         &mut sampler,
         args.prompt,
         args.steps,
@@ -100,11 +100,48 @@ Options:
 
 fn generate(
     transformer: &mut Transformer,
-    tokenizer: &mut Tokenizer,
+    tokenizer: &Tokenizer,
     sampler: &mut Sampler,
     prompt: String,
     steps: usize,
 ) {
     let prompt_tokens = tokenizer.encode(&prompt, true, false);
     println!("prompt_tokens: {prompt_tokens:?}");
+
+    let mut start = None;
+
+    let mut token = prompt_tokens[0];
+
+    let steps = steps as upos;
+    let mut pos: upos = 0;
+    while pos < steps {
+        let logits = transformer.forward(token, pos);
+
+        let next = match prompt_tokens.get(pos as usize + 1) {
+            Some(&tokid) => tokid,
+            None => sampler.sample(logits),
+        };
+        pos += 1;
+
+        if next == BOS {
+            break;
+        }
+
+        let piece = tokenizer.decode(token, next);
+        print!("{piece}");
+        token = next;
+
+        start.get_or_insert_with(|| Instant::now());
+    }
+    println!();
+
+    if let Some(start) = start {
+        if pos > 1 {
+            let end = Instant::now();
+            println!(
+                "achieved tok/s: {}",
+                (pos - 1) as f64 / (end - start).as_secs() as f64
+            )
+        }
+    }
 }
