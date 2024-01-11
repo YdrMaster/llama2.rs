@@ -6,6 +6,15 @@
 - `-O3`/`--release` 优化下有更高的 `tok/s`；
 - 状态管理有“层”的抽象，不同层的状态不集中在一处，更像支持流水并行的推理引擎实现；
 
+## 使用
+
+```bash
+wget https://huggingface.co/karpathy/tinyllamas/resolve/main/stories15M.bin
+wget https://raw.githubusercontent.com/karpathy/llama2.c/master/tokenizer.bin
+
+cargo run --release -- stories15M.bin --prompt "Once upon a time,"
+```
+
 ## 目标
 
 - [ ] 支持提示词批量输入；
