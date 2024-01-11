@@ -16,6 +16,7 @@ pub(super) type upos = u32;
 
 pub(super) struct Transformer {
     state: RunState,
+    layers: Vec<Layer>,
     embedder: RotaryEmbedder,
     mmap: Mmap,
 }
@@ -37,7 +38,8 @@ impl Transformer {
 
         Self {
             state: RunState::new(config),
-            embedder: RotaryEmbedder::new(config.seq_len(), config.dim(), config.n_heads()),
+            layers: vec![Layer::new(config); config.n_layers()],
+            embedder: RotaryEmbedder::new(config),
             mmap,
         }
     }
@@ -54,7 +56,6 @@ impl Transformer {
 
         let dim = config.dim();
         let hidden_dim = config.hidden_dim();
-        let n_layer = config.n_layers();
         let seq_len = config.seq_len();
         let kv_dim = config.kv_dim();
 
@@ -68,30 +69,36 @@ impl Transformer {
             let pos = pos as usize + i;
 
             let content_row = &slice!(w.token_embedding_table; dim; [token]);
-            s.x.copy_from_slice(content_row);
+            s.x0.copy_from_slice(content_row);
 
-            let att = &mut s.att[..=pos];
-            let hb = s.hb.split_at_mut(hidden_dim);
+            let h = s.hidden.split_at_mut(hidden_dim);
 
-            for l in 0..n_layer {
-                rmsnorm(&mut s.xb, &s.x, &slice!(w.rms_att_weight; dim; [l]));
+            for (l, layer) in self.layers.iter_mut().enumerate() {
+                let Layer { k_cache, v_cache } = layer;
 
-                let q = &mut s.q[..];
-                let k = &mut slice!(s.  key_cache; kv_dim; [l * seq_len + pos]);
-                let v = &mut slice!(s.value_cache; kv_dim; [l * seq_len + pos]);
+                rmsnorm(&mut s.x1, &s.x0, &slice!(w.rms_att_weight; dim; [l]));
 
-                matmul(q, &s.xb, &slice!(w.wq; dim * dim   ; [l]));
-                matmul(k, &s.xb, &slice!(w.wk; dim * kv_dim; [l]));
-                matmul(v, &s.xb, &slice!(w.wv; dim * kv_dim; [l]));
+                {
+                    let q = &mut s.q[..];
+                    let k = &mut slice!(k_cache; kv_dim; [pos]);
+                    let v = &mut slice!(v_cache; kv_dim; [pos]);
 
-                self.embedder.run(pos, q);
-                self.embedder.run(pos, k);
+                    matmul(q, &s.x1, &slice!(w.wq; dim * dim   ; [l]));
+                    matmul(k, &s.x1, &slice!(w.wk; dim * kv_dim; [l]));
+                    matmul(v, &s.x1, &slice!(w.wv; dim * kv_dim; [l]));
 
-                s.xb.fill(0.);
+                    self.embedder.run(pos, q);
+                    self.embedder.run(pos, k);
+                }
+
+                s.x1.fill(0.);
                 for h in 0..n_head {
-                    let q = &slice!(q; head_size; [h]);
+                    let att = &mut slice!(s.attention; seq_len; [h]);
+                    let att = &mut att[..=pos];
+
+                    let q = &slice!(s.q; head_size; [h]);
                     for (t, a) in att.iter_mut().enumerate() {
-                        let k = &slice!(s.key_cache; kv_dim; [l * seq_len + t]);
+                        let k = &slice!(k_cache; kv_dim; [t]);
                         let k = &slice!(k; head_size; [h / kv_mul]);
                         // score
                         *a = zip(q, k).map(|(&q, &k)| q * k).sum::<f32>() / head_div;
@@ -99,24 +106,24 @@ impl Transformer {
 
                     softmax(att);
 
-                    let xb = &mut slice!(s.xb; head_size; [h]);
+                    let xb = &mut slice!(s.x1; head_size; [h]);
                     for (t, &a) in att.iter().enumerate() {
-                        let v = &slice!(s.value_cache; kv_dim; [l * seq_len + t]);
+                        let v = &slice!(v_cache; kv_dim; [t]);
                         let v = &slice!(v; head_size; [h / kv_mul]);
                         zip(&mut xb[..], v).for_each(|(xb, &v)| *xb += a * v);
                     }
                 }
 
-                sgemm(&mut s.x, &s.xb, &slice!(w.wo; dim * dim; [l]));
+                sgemm(&mut s.x0, &s.x1, &slice!(w.wo; dim * dim; [l]));
 
-                rmsnorm(&mut s.xb, &s.x, &slice!(w.rms_ffn_weight; dim; [l]));
+                rmsnorm(&mut s.x1, &s.x0, &slice!(w.rms_ffn_weight; dim; [l]));
 
-                matmul(hb.0, &s.xb, &slice!(w.w1; dim * hidden_dim; [l]));
-                matmul(hb.1, &s.xb, &slice!(w.w3; dim * hidden_dim; [l]));
+                matmul(h.0, &s.x1, &slice!(w.w1; dim * hidden_dim; [l]));
+                matmul(h.1, &s.x1, &slice!(w.w3; dim * hidden_dim; [l]));
 
-                zip(&mut hb.0[..], &hb.1[..]).for_each(|(hb0, hb1)| *hb0 *= sigmoid(*hb0) * *hb1);
+                zip(&mut h.0[..], &h.1[..]).for_each(|(hb0, hb1)| *hb0 *= sigmoid(*hb0) * *hb1);
 
-                sgemm(&mut s.x, hb.0, &slice!(w.w2; dim * hidden_dim; [l]));
+                sgemm(&mut s.x0, h.0, &slice!(w.w2; dim * hidden_dim; [l]));
             }
         }
     }
@@ -127,40 +134,49 @@ impl Transformer {
         let w = Weights::new(&self.mmap);
         let s = &mut self.state;
 
-        rmsnorm_inplace(&mut s.x, &w.rms_final_weight);
-        matmul(&mut s.logits, &s.x, &w.wcls);
+        rmsnorm_inplace(&mut s.x0, &w.rms_final_weight);
+        matmul(&mut s.logits, &s.x0, &w.wcls);
 
         &mut s.logits
     }
 }
 
+/// This struct is new for each inference.
 struct RunState {
-    x: Vec<f32>,      // no cache
-    xb: Vec<f32>,     // no cache
-    hb: Vec<f32>,     // no cache
-    q: Vec<f32>,      // no cache
-    att: Vec<f32>,    // no cache
-    logits: Vec<f32>, // no cache
-    key_cache: Vec<f32>,
-    value_cache: Vec<f32>,
+    x0: Vec<f32>,
+    x1: Vec<f32>,
+    q: Vec<f32>,
+    hidden: Vec<f32>,
+    attention: Vec<f32>,
+    logits: Vec<f32>,
 }
 
 impl RunState {
     fn new(config: &Config) -> Self {
         let dim = config.dim();
-        let hidden_dim = config.hidden_dim();
-        let n_layers = config.n_layers();
-        let seq_len = config.seq_len();
-        let kv_dim = config.kv_dim();
         Self {
-            x: vec![0.; dim],
-            xb: vec![0.; dim],
-            hb: vec![0.; hidden_dim * 2],
+            x0: vec![0.; dim],
+            x1: vec![0.; dim],
             q: vec![0.; dim],
-            key_cache: vec![0.; n_layers * seq_len * kv_dim],
-            value_cache: vec![0.; n_layers * seq_len * kv_dim],
-            att: vec![0.; seq_len],
+            hidden: vec![0.; config.hidden_dim() * 2],
+            attention: vec![0.; config.n_heads() * config.seq_len()],
             logits: vec![0.; config.vocab_size()],
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Layer {
+    k_cache: Vec<f32>,
+    v_cache: Vec<f32>,
+}
+
+impl Layer {
+    fn new(config: &Config) -> Self {
+        let len = config.seq_len() * config.kv_dim();
+        Self {
+            k_cache: vec![0.; len],
+            v_cache: vec![0.; len],
         }
     }
 }
@@ -171,7 +187,10 @@ struct RotaryEmbedder {
 }
 
 impl RotaryEmbedder {
-    pub fn new(seq_len: usize, dim: usize, n_heads: usize) -> Self {
+    pub fn new(config: &Config) -> Self {
+        let dim = config.dim();
+        let n_heads = config.n_heads();
+        let seq_len = config.seq_len();
         let head_size = dim / n_heads;
         let mut rotary = Vec::with_capacity(seq_len * dim);
         for pos in 0..seq_len {
