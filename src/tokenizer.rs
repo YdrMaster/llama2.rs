@@ -113,7 +113,7 @@ impl Tokenizer {
             let byte = u8::from_str_radix(byte, 16).unwrap();
             let byte = &self.byte_pieces[byte as usize..][..1];
             unsafe { std::str::from_utf8_unchecked(byte) }
-        } else if token == BOS && piece.starts_with(" ") {
+        } else if token == BOS && piece.starts_with(' ') {
             &piece[1..]
         } else {
             piece

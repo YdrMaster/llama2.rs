@@ -47,7 +47,7 @@ impl Transformer {
         Config::map(&self.mmap).0.vocab_size()
     }
 
-    pub fn forward(&mut self, token: utok, pos: upos, out: bool) -> &mut [f32] {
+    pub fn update(&mut self, tokens: &[utok], pos: upos) {
         let (config, _) = Config::map(&self.mmap);
         let w = Weights::new(&self.mmap);
         let s = &mut self.state;
@@ -63,68 +63,74 @@ impl Transformer {
         let head_size = dim / n_head;
         let head_div = (head_size as f32).sqrt();
 
-        let token = token as usize;
-        let pos = pos as usize;
+        for (i, &token) in tokens.iter().enumerate() {
+            let token = token as usize;
+            let pos = pos as usize + i;
 
-        let content_row = &slice!(w.token_embedding_table; dim; [token]);
-        s.x.copy_from_slice(content_row);
+            let content_row = &slice!(w.token_embedding_table; dim; [token]);
+            s.x.copy_from_slice(content_row);
 
-        let att = &mut s.att[..=pos];
-        let hb = s.hb.split_at_mut(hidden_dim);
+            let att = &mut s.att[..=pos];
+            let hb = s.hb.split_at_mut(hidden_dim);
 
-        for l in 0..n_layer {
-            rmsnorm(&mut s.xb, &s.x, &slice!(w.rms_att_weight; dim; [l]));
+            for l in 0..n_layer {
+                rmsnorm(&mut s.xb, &s.x, &slice!(w.rms_att_weight; dim; [l]));
 
-            let q = &mut s.q[..];
-            let k = &mut slice!(s.  key_cache; kv_dim; [l * seq_len + pos]);
-            let v = &mut slice!(s.value_cache; kv_dim; [l * seq_len + pos]);
+                let q = &mut s.q[..];
+                let k = &mut slice!(s.  key_cache; kv_dim; [l * seq_len + pos]);
+                let v = &mut slice!(s.value_cache; kv_dim; [l * seq_len + pos]);
 
-            matmul(q, &s.xb, &slice!(w.wq; dim * dim   ; [l]));
-            matmul(k, &s.xb, &slice!(w.wk; dim * kv_dim; [l]));
-            matmul(v, &s.xb, &slice!(w.wv; dim * kv_dim; [l]));
+                matmul(q, &s.xb, &slice!(w.wq; dim * dim   ; [l]));
+                matmul(k, &s.xb, &slice!(w.wk; dim * kv_dim; [l]));
+                matmul(v, &s.xb, &slice!(w.wv; dim * kv_dim; [l]));
 
-            self.embedder.run(pos, q);
-            self.embedder.run(pos, k);
+                self.embedder.run(pos, q);
+                self.embedder.run(pos, k);
 
-            s.xb.fill(0.);
-            for h in 0..n_head {
-                let q = &slice!(q; head_size; [h]);
-                for (t, a) in att.iter_mut().enumerate() {
-                    let k = &slice!(s.key_cache; kv_dim; [l * seq_len + t]);
-                    let k = &slice!(k; head_size; [h / kv_mul]);
-                    // score
-                    *a = zip(q, k).map(|(&q, &k)| q * k).sum::<f32>() / head_div;
+                s.xb.fill(0.);
+                for h in 0..n_head {
+                    let q = &slice!(q; head_size; [h]);
+                    for (t, a) in att.iter_mut().enumerate() {
+                        let k = &slice!(s.key_cache; kv_dim; [l * seq_len + t]);
+                        let k = &slice!(k; head_size; [h / kv_mul]);
+                        // score
+                        *a = zip(q, k).map(|(&q, &k)| q * k).sum::<f32>() / head_div;
+                    }
+
+                    softmax(att);
+
+                    let xb = &mut slice!(s.xb; head_size; [h]);
+                    for (t, &a) in att.iter().enumerate() {
+                        let v = &slice!(s.value_cache; kv_dim; [l * seq_len + t]);
+                        let v = &slice!(v; head_size; [h / kv_mul]);
+                        zip(&mut xb[..], v).for_each(|(xb, &v)| *xb += a * v);
+                    }
                 }
 
-                softmax(att);
+                sgemm(&mut s.x, &s.xb, &slice!(w.wo; dim * dim; [l]));
 
-                let xb = &mut slice!(s.xb; head_size; [h]);
-                for (t, &a) in att.iter().enumerate() {
-                    let v = &slice!(s.value_cache; kv_dim; [l * seq_len + t]);
-                    let v = &slice!(v; head_size; [h / kv_mul]);
-                    zip(&mut xb[..], v).for_each(|(xb, &v)| *xb += a * v);
-                }
+                rmsnorm(&mut s.xb, &s.x, &slice!(w.rms_ffn_weight; dim; [l]));
+
+                matmul(hb.0, &s.xb, &slice!(w.w1; dim * hidden_dim; [l]));
+                matmul(hb.1, &s.xb, &slice!(w.w3; dim * hidden_dim; [l]));
+
+                zip(&mut hb.0[..], &hb.1[..]).for_each(|(hb0, hb1)| *hb0 *= sigmoid(*hb0) * *hb1);
+
+                sgemm(&mut s.x, hb.0, &slice!(w.w2; dim * hidden_dim; [l]));
             }
-
-            sgemm(&mut s.x, &s.xb, &slice!(w.wo; dim * dim; [l]));
-
-            rmsnorm(&mut s.xb, &s.x, &slice!(w.rms_ffn_weight; dim; [l]));
-
-            matmul(hb.0, &s.xb, &slice!(w.w1; dim * hidden_dim; [l]));
-            matmul(hb.1, &s.xb, &slice!(w.w3; dim * hidden_dim; [l]));
-
-            zip(&mut hb.0[..], &hb.1[..]).for_each(|(hb0, hb1)| *hb0 *= sigmoid(*hb0) * *hb1);
-
-            sgemm(&mut s.x, hb.0, &slice!(w.w2; dim * hidden_dim; [l]));
         }
-        if out {
-            rmsnorm_inplace(&mut s.x, &w.rms_final_weight);
-            matmul(&mut s.logits, &s.x, &w.wcls);
+    }
 
-            &mut s.logits
-        } else {
-            &mut []
-        }
+    pub fn forward(&mut self, token: utok, pos: upos) -> &mut [f32] {
+        self.update(&[token], pos);
+
+        let w = Weights::new(&self.mmap);
+        let s = &mut self.state;
+
+        rmsnorm_inplace(&mut s.x, &w.rms_final_weight);
+        matmul(&mut s.logits, &s.x, &w.wcls);
+
+        &mut s.logits
     }
 }
 

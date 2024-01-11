@@ -113,22 +113,20 @@ fn generate(
     prompt: String,
     steps: usize,
 ) {
-    let prompt_tokens = tokenizer.encode(&prompt, true, false);
-    println!("prompt_tokens: {prompt_tokens:?}");
-
     let mut text = String::with_capacity(1024);
     text.push_str(&prompt);
 
+    let prompt_tokens = tokenizer.encode(&prompt, true, false);
+    let (last, tokens) = prompt_tokens.split_last().unwrap();
+
     let start = Instant::now();
 
-    for (pos, &tokid) in prompt_tokens.iter().enumerate() {
-        let _ = transformer.forward(tokid, pos as _, false);
-    }
+    transformer.update(tokens, 0);
 
-    let mut pos = prompt_tokens.len() - 1;
-    let mut token = prompt_tokens[pos];
+    let mut pos = tokens.len();
+    let mut token = *last;
     while pos < steps {
-        let logits = transformer.forward(token, pos as _, true);
+        let logits = transformer.forward(token, pos as _);
         let next = sampler.sample(logits);
         pos += 1;
 
