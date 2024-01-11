@@ -48,9 +48,6 @@ impl Transformer {
         let w = Weights::new(&self.mmap);
         let s = &mut self.state;
 
-        let token = token as usize;
-        let pos = pos as usize;
-
         let dim = config.dim();
         let hidden_dim = config.hidden_dim();
         let n_layer = config.n_layers();
@@ -58,8 +55,17 @@ impl Transformer {
         let kv_dim = config.kv_dim();
         let head_size = config.head_size();
 
+        let n_head = config.n_heads();
+        let kv_mul = config.n_heads() / config.n_kv_heads();
+        let head_div = (head_size as f32).sqrt();
+
+        let token = token as usize;
+        let pos = pos as usize;
+
         let content_row = &slice!(w.token_embedding_table; dim; [token]);
         s.x.copy_from_slice(content_row);
+
+        let att = &mut s.att[..=pos];
 
         for l in 0..n_layer {
             rmsnorm(&mut s.xb, &s.x, &slice!(w.rms_att_weight; dim; [l]));
@@ -96,19 +102,14 @@ impl Transformer {
                 }
             }
 
-            let n_head = config.n_heads();
-            let kv_mul = config.n_heads() / config.n_kv_heads();
-            let div = (head_size as f32).sqrt();
-
             s.xb.fill(0.);
             for h in 0..n_head {
                 let q = &slice!(q; head_size; [h]);
-                let att = &mut s.att[..=pos];
                 for (t, a) in att.iter_mut().enumerate() {
                     let k = &slice!(s.key_cache; kv_dim; [l * seq_len + t]);
                     let k = &slice!(k; head_size; [h / kv_mul]);
-                    let score = zip(q, k).map(|(&q, &k)| q * k).sum::<f32>() / div;
-                    *a = score;
+                    // score
+                    *a = zip(q, k).map(|(&q, &k)| q * k).sum::<f32>() / head_div;
                 }
 
                 softmax(att);
@@ -117,7 +118,7 @@ impl Transformer {
                 for (t, &a) in att.iter().enumerate() {
                     let v = &slice!(s.value_cache; kv_dim; [l * seq_len + t]);
                     let v = &slice!(v; head_size; [h / kv_mul]);
-                    zip(xb.iter_mut(), v).for_each(|(xb, &v)| *xb += a * v);
+                    zip(&mut xb[..], v).for_each(|(xb, &v)| *xb += a * v);
                 }
             }
 
