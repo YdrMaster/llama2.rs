@@ -17,17 +17,19 @@ fn rmsnorm_reduce(x: &[f32]) -> f32 {
     (y / (x.len() as f32) + 1e-5).powf(-0.5)
 }
 
-pub(crate) fn matmul(xout: &mut [f32], x: &[f32], w: &[f32]) {
+/// y = wx.
+pub(crate) fn matmul(y: &mut [f32], x: &[f32], w: &[f32]) {
     let n = x.len();
-    xout.iter_mut().enumerate().for_each(|(i, y)| {
+    y.iter_mut().enumerate().for_each(|(i, y)| {
         *y = zip(&w[i * n..], x).map(|(&w, &x)| w * x).sum::<f32>();
     });
 }
 
-pub(crate) fn sgemm(xout: &mut [f32], x: &[f32], w: &[f32]) {
+/// y += wx.
+pub(crate) fn sgemm(y: &mut [f32], x: &[f32], w: &[f32]) {
     let n = x.len();
-    xout.iter_mut().enumerate().for_each(|(i, y)| {
-        *y += zip(&w[i * n..], x).map(|(&w, &x)| w * x).sum::<f32>();
+    y.iter_mut().enumerate().for_each(|(i, y)| {
+        zip(&w[i * n..], x).for_each(|(&w, &x)| *y += w * x);
     });
 }
 

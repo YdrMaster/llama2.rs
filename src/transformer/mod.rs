@@ -70,6 +70,7 @@ impl Transformer {
         s.x.copy_from_slice(content_row);
 
         let att = &mut s.att[..=pos];
+        let hb = s.hb.split_at_mut(hidden_dim);
 
         for l in 0..n_layer {
             rmsnorm(&mut s.xb, &s.x, &slice!(w.rms_att_weight; dim; [l]));
@@ -109,12 +110,12 @@ impl Transformer {
 
             rmsnorm(&mut s.xb, &s.x, &slice!(w.rms_ffn_weight; dim; [l]));
 
-            matmul(&mut s.hb, &s.xb, &slice!(w.w1; dim * hidden_dim; [l]));
-            matmul(&mut s.hb2, &s.xb, &slice!(w.w3; dim * hidden_dim; [l]));
+            matmul(hb.0, &s.xb, &slice!(w.w1; dim * hidden_dim; [l]));
+            matmul(hb.1, &s.xb, &slice!(w.w3; dim * hidden_dim; [l]));
 
-            zip(&mut s.hb, &s.hb2).for_each(|(hb, hb2)| *hb *= sigmoid(*hb) * hb2);
+            zip(&mut hb.0[..], &hb.1[..]).for_each(|(hb0, hb1)| *hb0 *= sigmoid(*hb0) * *hb1);
 
-            sgemm(&mut s.x, &s.hb, &slice!(w.w2; dim * hidden_dim; [l]));
+            sgemm(&mut s.x, hb.0, &slice!(w.w2; dim * hidden_dim; [l]));
         }
 
         rmsnorm_inplace(&mut s.x, &w.rms_final_weight);
@@ -128,7 +129,6 @@ struct RunState {
     x: Vec<f32>,      // no cache
     xb: Vec<f32>,     // no cache
     hb: Vec<f32>,     // no cache
-    hb2: Vec<f32>,    // no cache
     q: Vec<f32>,      // no cache
     att: Vec<f32>,    // no cache
     logits: Vec<f32>, // no cache
@@ -146,8 +146,7 @@ impl RunState {
         Self {
             x: vec![0.; dim],
             xb: vec![0.; dim],
-            hb: vec![0.; hidden_dim],
-            hb2: vec![0.; hidden_dim],
+            hb: vec![0.; hidden_dim * 2],
             q: vec![0.; dim],
             key_cache: vec![0.; n_layers * seq_len * kv_dim],
             value_cache: vec![0.; n_layers * seq_len * kv_dim],
