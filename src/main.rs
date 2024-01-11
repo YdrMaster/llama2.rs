@@ -11,7 +11,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokenizer::{Tokenizer, BOS};
-use transformer::{upos, Transformer};
+use transformer::Transformer;
 
 fn main() {
     struct Args {
@@ -116,24 +116,20 @@ fn generate(
     let prompt_tokens = tokenizer.encode(&prompt, true, false);
     println!("prompt_tokens: {prompt_tokens:?}");
 
-    let mut start = None;
     let mut text = String::with_capacity(1024);
+    text.push_str(&prompt);
 
-    let mut token = prompt_tokens[0];
+    let start = Instant::now();
 
-    let steps = steps as upos;
-    let mut pos: upos = 0;
+    for (pos, &tokid) in prompt_tokens.iter().enumerate() {
+        let _ = transformer.forward(tokid, pos as _, false);
+    }
+
+    let mut pos = prompt_tokens.len() - 1;
+    let mut token = prompt_tokens[pos];
     while pos < steps {
-        let next = match prompt_tokens.get(pos as usize + 1) {
-            Some(&tokid) => {
-                let _ = transformer.forward(token, pos, false);
-                tokid
-            }
-            None => {
-                let logits = transformer.forward(token, pos, true);
-                sampler.sample(logits)
-            }
-        };
+        let logits = transformer.forward(token, pos as _, true);
+        let next = sampler.sample(logits);
         pos += 1;
 
         if next == BOS {
@@ -142,19 +138,12 @@ fn generate(
 
         text.push_str(tokenizer.decode(token, next));
         token = next;
-
-        start.get_or_insert_with(|| Instant::now());
     }
 
-    if let Some(start) = start {
-        if pos > 1 {
-            let end = Instant::now();
-            println!(
-                "achieved tok/s: {}",
-                (pos - 1) as f64 / (end - start).as_secs_f64()
-            )
-        }
-    }
-
+    let end = Instant::now();
+    println!(
+        "achieved tok/s: {}",
+        pos as f64 / (end - start).as_secs_f64()
+    );
     println!("{text}");
 }
