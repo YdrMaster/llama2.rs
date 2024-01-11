@@ -1,5 +1,5 @@
 ﻿use memmap2::Mmap;
-use std::{fs::File, path::Path, vec};
+use std::{fs::File, path::Path};
 
 /// `utok` for token id.
 #[allow(non_camel_case_types)]
@@ -17,6 +17,7 @@ pub(super) struct Tokenizer {
     words_offset: Vec<usize>,
     /// 保存根据 token 字符串字典序排序的序号，用于从 token 字符串查询序号。
     sorted_indices: Vec<utok>,
+    byte_pieces: [u8; 256],
 }
 
 impl Tokenizer {
@@ -35,16 +36,22 @@ impl Tokenizer {
         }
         sorted_indices.sort_by_key(|&index| file::map(&mmap, words_offset[index as usize]).0);
 
-        Self {
+        let mut ans = Self {
             mmap,
             words_offset,
             sorted_indices,
+            byte_pieces: [0; 256],
+        };
+        for i in 0..=255u8 {
+            ans.byte_pieces[i as usize] = i;
         }
+        ans
     }
 
+    #[allow(dead_code)]
     #[inline]
     pub fn max_token_len(&self) -> usize {
-        unsafe { *self.mmap.as_ptr().cast::<u32>() as usize }
+        (unsafe { *self.mmap.as_ptr().cast::<u32>() }) as _
     }
 
     pub fn encode(&self, text: &str, bos: bool, eos: bool) -> Vec<utok> {
@@ -100,16 +107,16 @@ impl Tokenizer {
         tokens
     }
 
-    pub fn decode(&self, token: utok, next: utok) -> String {
-        let mut piece = self.map_str(next);
-        if token == BOS && piece.starts_with(" ") {
-            piece = &piece[1..];
-        }
+    pub fn decode(&self, token: utok, next: utok) -> &str {
+        let piece = self.map_str(next);
         if let Some(byte) = piece.strip_prefix("<0x").and_then(|s| s.strip_suffix(">")) {
             let byte = u8::from_str_radix(byte, 16).unwrap();
-            String::from_utf8(vec![byte]).unwrap()
+            let byte = &self.byte_pieces[byte as usize..][..1];
+            unsafe { std::str::from_utf8_unchecked(byte) }
+        } else if token == BOS && piece.starts_with(" ") {
+            &piece[1..]
         } else {
-            piece.to_owned()
+            piece
         }
     }
 

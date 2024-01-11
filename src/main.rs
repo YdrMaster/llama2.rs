@@ -7,7 +7,6 @@ use core::panic;
 use sampler::Sampler;
 use std::{
     fs::canonicalize,
-    io::Write,
     path::PathBuf,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -118,6 +117,7 @@ fn generate(
     println!("prompt_tokens: {prompt_tokens:?}");
 
     let mut start = None;
+    let mut text = String::with_capacity(1024);
 
     let mut token = prompt_tokens[0];
 
@@ -137,14 +137,11 @@ fn generate(
             break;
         }
 
-        let piece = tokenizer.decode(token, next);
-        print!("{piece}");
-        std::io::stdout().flush().unwrap();
+        text.push_str(tokenizer.decode(token, next));
         token = next;
 
         start.get_or_insert_with(|| Instant::now());
     }
-    println!();
 
     if let Some(start) = start {
         if pos > 1 {
@@ -155,4 +152,6 @@ fn generate(
             )
         }
     }
+
+    println!("{text}");
 }
