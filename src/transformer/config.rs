@@ -14,7 +14,7 @@ pub(super) struct Config {
 
 impl Config {
     #[inline]
-    pub fn map<'a>(mmap: &'a Mmap) -> (&'a Self, &'a [u8]) {
+    pub fn map(mmap: &Mmap) -> (&Self, &[u8]) {
         let (config, data) = mmap.as_ref().split_at(std::mem::size_of::<Self>());
         (unsafe { &*config.as_ptr().cast() }, data)
     }
@@ -51,7 +51,7 @@ impl Config {
 
     #[inline]
     pub const fn vocab_size(&self) -> usize {
-        self.vocab_size.abs() as _
+        self.vocab_size.unsigned_abs() as _
     }
 
     #[inline]

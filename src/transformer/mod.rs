@@ -32,7 +32,7 @@ impl Transformer {
     pub fn read_checkpoint(checkpoint: impl AsRef<Path>) -> Self {
         let checkpoint = checkpoint.as_ref();
         let file = File::open(checkpoint)
-            .expect(format!("Could not open checkpoint {}", checkpoint.display()).as_str());
+            .unwrap_or_else(|_| panic!("Could not open checkpoint {}", checkpoint.display()));
 
         let mmap = unsafe { Mmap::map(&file) }.unwrap();
         let config = Config::map(&mmap).0;
@@ -81,7 +81,7 @@ impl Transformer {
                 rmsnorm(&mut s.x1, &s.x0, &slice!(w.rms_att_weight; dim; [l]));
 
                 {
-                    let q = &mut s.q[..];
+                    let q = &mut *s.q;
                     let k = &mut slice!(k_cache; kv_dim; [pos]);
                     let v = &mut slice!(v_cache; kv_dim; [pos]);
 
@@ -112,7 +112,7 @@ impl Transformer {
                     for (t, &a) in att.iter().enumerate() {
                         let v = &slice!(v_cache; kv_dim; [t]);
                         let v = &slice!(v; head_size; [h / kv_mul]);
-                        zip(&mut xb[..], v).for_each(|(xb, &v)| *xb += a * v);
+                        zip(&mut *xb, v).for_each(|(xb, &v)| *xb += a * v);
                     }
                 }
 
@@ -123,7 +123,7 @@ impl Transformer {
                 matmul(h.0, &s.x1, &slice!(w.w1; dim * hidden_dim; [l]));
                 matmul(h.1, &s.x1, &slice!(w.w3; dim * hidden_dim; [l]));
 
-                zip(&mut h.0[..], &h.1[..]).for_each(|(hb0, hb1)| *hb0 *= sigmoid(*hb0) * *hb1);
+                zip(&mut *h.0, &*h.1).for_each(|(hb0, hb1)| *hb0 *= sigmoid(*hb0) * *hb1);
 
                 sgemm(&mut s.x0, h.0, &slice!(w.w2; dim * hidden_dim; [l]));
             }
@@ -134,10 +134,10 @@ impl Transformer {
         self.update(&[token], pos);
 
         let w = Weights::new(&self.mmap);
-        let x = &mut self.state.x0[..];
+        let x = &mut *self.state.x0;
 
-        rmsnorm_inplace(x, &w.rms_final_weight);
-        matmul(&mut self.logits, x, &w.wcls);
+        rmsnorm_inplace(x, w.rms_final_weight);
+        matmul(&mut self.logits, x, w.wcls);
 
         &mut self.logits
     }

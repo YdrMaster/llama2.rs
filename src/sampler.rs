@@ -50,7 +50,7 @@ impl Sampler {
         self.rng_state ^= self.rng_state >> 12;
         self.rng_state ^= self.rng_state << 25;
         self.rng_state ^= self.rng_state >> 27;
-        return ((self.rng_state * 0x2545F4914F6CDD1Du64) >> 32) as _;
+        ((self.rng_state * 0x2545F4914F6CDD1Du64) >> 32) as _
     }
 }
 
@@ -62,7 +62,7 @@ fn sample_mult(logits: &[f32], coin: f32) -> utok {
             return i as _;
         }
     }
-    return (logits.len() - 1) as _;
+    (logits.len() - 1) as _
 }
 
 fn sample_top_p(logits: &[f32], top_p: f32, probindex: &mut Vec<ProbIndex>, coin: f32) -> utok {

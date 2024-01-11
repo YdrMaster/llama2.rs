@@ -109,7 +109,7 @@ impl Tokenizer {
 
     pub fn decode(&self, token: utok, next: utok) -> &str {
         let piece = self.map_str(next);
-        if let Some(byte) = piece.strip_prefix("<0x").and_then(|s| s.strip_suffix(">")) {
+        if let Some(byte) = piece.strip_prefix("<0x").and_then(|s| s.strip_suffix('>')) {
             let byte = u8::from_str_radix(byte, 16).unwrap();
             let byte = &self.byte_pieces[byte as usize..][..1];
             unsafe { std::str::from_utf8_unchecked(byte) }
@@ -166,7 +166,7 @@ mod file {
 
     /// 获取 `offset` 处对象的内容。
     #[inline]
-    pub fn map<'a>(mmap: &'a Mmap, offset: usize) -> (&'a str, f32) {
+    pub fn map(mmap: &Mmap, offset: usize) -> (&str, f32) {
         let slice = &mmap.as_ref()[offset..];
         let header = unsafe { slice.as_ptr().cast::<TokenHeader>().read_unaligned() };
         let slice = &slice[std::mem::size_of::<TokenHeader>()..][..header.len as usize];
