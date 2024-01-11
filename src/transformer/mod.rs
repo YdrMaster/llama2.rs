@@ -15,8 +15,9 @@ use weights::Weights;
 pub(super) type upos = u32;
 
 pub(super) struct Transformer {
-    state: RunState,
     layers: Vec<Layer>,
+    logits: Vec<f32>,
+    state: RunState,
     embedder: RotaryEmbedder,
     mmap: Mmap,
 }
@@ -37,8 +38,9 @@ impl Transformer {
         let config = Config::map(&mmap).0;
 
         Self {
-            state: RunState::new(config),
             layers: vec![Layer::new(config); config.n_layers()],
+            logits: vec![0.; config.vocab_size()],
+            state: RunState::new(config),
             embedder: RotaryEmbedder::new(config),
             mmap,
         }
@@ -132,12 +134,12 @@ impl Transformer {
         self.update(&[token], pos);
 
         let w = Weights::new(&self.mmap);
-        let s = &mut self.state;
+        let x = &mut self.state.x0[..];
 
-        rmsnorm_inplace(&mut s.x0, &w.rms_final_weight);
-        matmul(&mut s.logits, &s.x0, &w.wcls);
+        rmsnorm_inplace(x, &w.rms_final_weight);
+        matmul(&mut self.logits, x, &w.wcls);
 
-        &mut s.logits
+        &mut self.logits
     }
 }
 
@@ -148,7 +150,6 @@ struct RunState {
     q: Vec<f32>,
     hidden: Vec<f32>,
     attention: Vec<f32>,
-    logits: Vec<f32>,
 }
 
 impl RunState {
@@ -160,7 +161,6 @@ impl RunState {
             q: vec![0.; dim],
             hidden: vec![0.; config.hidden_dim() * 2],
             attention: vec![0.; config.n_heads() * config.seq_len()],
-            logits: vec![0.; config.vocab_size()],
         }
     }
 }
