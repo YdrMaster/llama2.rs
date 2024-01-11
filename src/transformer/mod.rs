@@ -2,7 +2,7 @@
 mod weights;
 
 use super::{
-    kernel::{matmul, rmsnorm, rmsnorm_inplace, sigmoid, softmax},
+    kernel::{matmul, rmsnorm, rmsnorm_inplace, sgemm, sigmoid, softmax},
     tokenizer::utok,
 };
 use config::Config;
@@ -16,7 +16,14 @@ pub(super) type upos = u32;
 
 pub(super) struct Transformer {
     state: RunState,
+    embedder: RotaryEmbedder,
     mmap: Mmap,
+}
+
+macro_rules! slice {
+    ($blob:expr; $width:expr; [$line:expr]) => {
+        $blob[$line * $width..][..$width]
+    };
 }
 
 impl Transformer {
@@ -26,8 +33,11 @@ impl Transformer {
             .expect(format!("Could not open checkpoint {}", checkpoint.display()).as_str());
 
         let mmap = unsafe { Mmap::map(&file) }.unwrap();
+        let config = Config::map(&mmap).0;
+
         Self {
-            state: RunState::new(Config::map(&mmap).0),
+            state: RunState::new(config),
+            embedder: RotaryEmbedder::new(config.seq_len(), config.dim(), config.n_heads()),
             mmap,
         }
     }
@@ -38,12 +48,6 @@ impl Transformer {
     }
 
     pub fn forward(&mut self, token: utok, pos: upos) -> &mut [f32] {
-        macro_rules! slice {
-            ($blob:expr; $width:expr; [$line:expr]) => {
-                $blob[$line * $width..][..$width]
-            };
-        }
-
         let (config, _) = Config::map(&self.mmap);
         let w = Weights::new(&self.mmap);
         let s = &mut self.state;
@@ -53,10 +57,10 @@ impl Transformer {
         let n_layer = config.n_layers();
         let seq_len = config.seq_len();
         let kv_dim = config.kv_dim();
-        let head_size = config.head_size();
 
         let n_head = config.n_heads();
-        let kv_mul = config.n_heads() / config.n_kv_heads();
+        let kv_mul = n_head / config.n_kv_heads();
+        let head_size = dim / n_head;
         let head_div = (head_size as f32).sqrt();
 
         let token = token as usize;
@@ -78,29 +82,8 @@ impl Transformer {
             matmul(k, &s.xb, &slice!(w.wk; dim * kv_dim; [l]));
             matmul(v, &s.xb, &slice!(w.wv; dim * kv_dim; [l]));
 
-            for i in (0..dim).step_by(2) {
-                let freq = 1e4f32.powf(-((i % head_size) as f32 / head_size as f32));
-                let w = {
-                    let (fci, fcr) = (pos as f32 * freq).sin_cos();
-                    [
-                        fcr, -fci, //
-                        fci, fcr,
-                    ]
-                };
-
-                #[inline]
-                fn rot(y: &mut [f32], w: &[f32]) {
-                    let x = &[y[0], y[1]];
-                    matmul(y, x, w);
-                }
-
-                {
-                    rot(&mut q[i..][..2], &w);
-                }
-                if i < kv_dim {
-                    rot(&mut k[i..][..2], &w);
-                }
-            }
+            self.embedder.run(pos, q);
+            self.embedder.run(pos, k);
 
             s.xb.fill(0.);
             for h in 0..n_head {
@@ -122,8 +105,7 @@ impl Transformer {
                 }
             }
 
-            matmul(&mut s.xb2, &s.xb, &slice!(w.wo; dim * dim; [l]));
-            zip(&mut s.x, &s.xb2).for_each(|(x, &xb2)| *x += xb2);
+            sgemm(&mut s.x, &s.xb, &slice!(w.wo; dim * dim; [l]));
 
             rmsnorm(&mut s.xb, &s.x, &slice!(w.rms_ffn_weight; dim; [l]));
 
@@ -132,8 +114,7 @@ impl Transformer {
 
             zip(&mut s.hb, &s.hb2).for_each(|(hb, hb2)| *hb *= sigmoid(*hb) * hb2);
 
-            matmul(&mut s.xb2, &s.hb, &slice!(w.w2; dim * hidden_dim; [l]));
-            zip(&mut s.x, &s.xb2).for_each(|(x, &xb2)| *x += xb2);
+            sgemm(&mut s.x, &s.hb, &slice!(w.w2; dim * hidden_dim; [l]));
         }
 
         rmsnorm_inplace(&mut s.x, &w.rms_final_weight);
@@ -146,7 +127,6 @@ impl Transformer {
 struct RunState {
     x: Vec<f32>,      // no cache
     xb: Vec<f32>,     // no cache
-    xb2: Vec<f32>,    // no cache
     hb: Vec<f32>,     // no cache
     hb2: Vec<f32>,    // no cache
     q: Vec<f32>,      // no cache
@@ -166,7 +146,6 @@ impl RunState {
         Self {
             x: vec![0.; dim],
             xb: vec![0.; dim],
-            xb2: vec![0.; dim],
             hb: vec![0.; hidden_dim],
             hb2: vec![0.; hidden_dim],
             q: vec![0.; dim],
@@ -174,6 +153,39 @@ impl RunState {
             value_cache: vec![0.; n_layers * seq_len * kv_dim],
             att: vec![0.; seq_len],
             logits: vec![0.; config.vocab_size()],
+        }
+    }
+}
+
+struct RotaryEmbedder {
+    dim: usize,
+    rotary: Vec<f32>,
+}
+
+impl RotaryEmbedder {
+    pub fn new(seq_len: usize, dim: usize, n_heads: usize) -> Self {
+        let head_size = dim / n_heads;
+        let mut rotary = Vec::with_capacity(seq_len * dim);
+        for pos in 0..seq_len {
+            for i in (0..dim).step_by(2) {
+                let freq = 1e4f32.powf(-((i % head_size) as f32 / head_size as f32));
+                let (sin, cos) = (pos as f32 * freq).sin_cos();
+                rotary.push(cos);
+                rotary.push(sin);
+            }
+        }
+        Self { dim, rotary }
+    }
+
+    fn run(&self, pos: usize, data: &mut [f32]) {
+        let rotary = &slice!(self.rotary; self.dim; [pos]);
+        for i in 0..data.len() / 2 {
+            let x = &mut slice!(data; 2; [i]);
+            let w = &slice!(rotary; 2; [i]);
+            x.copy_from_slice(&[
+                x[0] * w[0] - x[1] * w[1], //
+                x[1] * w[0] + x[0] * w[1],
+            ]);
         }
     }
 }

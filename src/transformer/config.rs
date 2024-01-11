@@ -63,9 +63,4 @@ impl Config {
     pub const fn kv_dim(&self) -> usize {
         (self.dim * self.n_kv_heads / self.n_heads) as _
     }
-
-    #[inline]
-    pub const fn head_size(&self) -> usize {
-        (self.dim / self.n_heads) as _
-    }
 }

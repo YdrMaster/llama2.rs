@@ -24,6 +24,13 @@ pub(crate) fn matmul(xout: &mut [f32], x: &[f32], w: &[f32]) {
     });
 }
 
+pub(crate) fn sgemm(xout: &mut [f32], x: &[f32], w: &[f32]) {
+    let n = x.len();
+    xout.iter_mut().enumerate().for_each(|(i, y)| {
+        *y += zip(&w[i * n..], x).map(|(&w, &x)| w * x).sum::<f32>();
+    });
+}
+
 pub(crate) fn softmax(x: &mut [f32]) {
     let max = *x.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
     let sum = x
