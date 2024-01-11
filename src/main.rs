@@ -124,12 +124,15 @@ fn generate(
     let steps = steps as upos;
     let mut pos: upos = 0;
     while pos < steps {
-        let logits = transformer.forward(token, pos);
-        // println!("logits: {logits:?}");
-
         let next = match prompt_tokens.get(pos as usize + 1) {
-            Some(&tokid) => tokid,
-            None => sampler.sample(logits),
+            Some(&tokid) => {
+                let _ = transformer.forward(token, pos, false);
+                tokid
+            }
+            None => {
+                let logits = transformer.forward(token, pos, true);
+                sampler.sample(logits)
+            }
         };
         pos += 1;
 

@@ -47,7 +47,7 @@ impl Transformer {
         Config::map(&self.mmap).0.vocab_size()
     }
 
-    pub fn forward(&mut self, token: utok, pos: upos) -> &mut [f32] {
+    pub fn forward(&mut self, token: utok, pos: upos, out: bool) -> &mut [f32] {
         let (config, _) = Config::map(&self.mmap);
         let w = Weights::new(&self.mmap);
         let s = &mut self.state;
@@ -117,11 +117,14 @@ impl Transformer {
 
             sgemm(&mut s.x, hb.0, &slice!(w.w2; dim * hidden_dim; [l]));
         }
+        if out {
+            rmsnorm_inplace(&mut s.x, &w.rms_final_weight);
+            matmul(&mut s.logits, &s.x, &w.wcls);
 
-        rmsnorm_inplace(&mut s.x, &w.rms_final_weight);
-        matmul(&mut s.logits, &s.x, &w.wcls);
-
-        return &mut s.logits;
+            &mut s.logits
+        } else {
+            &mut []
+        }
     }
 }
 
