@@ -17,7 +17,7 @@ cargo run --release -- stories15M.bin --prompt "Once upon a time,"
 
 ## 目标
 
-- [ ] 支持提示词批量输入；
+- [x] 支持提示词批量输入；
 - [ ] 添加注释；
 - [ ] 支持问答模式；
 - [ ] 支持多核并行加速/向量化加速；
