@@ -159,7 +159,7 @@ impl Transformer {
                     let a = slice!(s.q; head_size; [h]).as_ptr();
                     let b = slice!(k_cache; head_size; [h / kv_mul]).as_ptr();
                     let c = att.as_mut_ptr();
-                    let rsa = k as _;
+                    let rsa = kv_dim as _;
                     let csa = 1;
                     let rsb = 1;
                     let csb = kv_dim as _;
@@ -174,8 +174,9 @@ impl Transformer {
 
                 for i in 0..tok_len {
                     let att = &mut slice!(att; seq_len; [i]);
-                    let att = &mut att[..pos + tok_len];
+                    let (att, tail) = att.split_at_mut(pos + i + 1);
                     softmax(att);
+                    tail.fill(0.);
                 }
 
                 {
