@@ -2,10 +2,17 @@
 use crate::kernel::slice;
 
 pub(super) struct RunState {
+    /// state buffer: `tok_len x dim`.
     pub x0: Vec<f32>,
+    /// state buffer: `tok_len x dim`.
     pub x1: Vec<f32>,
+    /// query buffer: `tok_len x dim`.
     pub q: Vec<f32>,
+    /// hidden state buffer: `2 * tok_len x hidden_dim`.
+    ///
+    /// split to two buffers for using.
     pub hidden: Vec<f32>,
+    /// attention buffer: `n_heads x tok_len x seq_len`.
     pub attention: Vec<f32>,
 }
 
@@ -24,7 +31,9 @@ impl RunState {
 
 #[derive(Clone)]
 pub(super) struct Layer {
+    /// key cache: `seq_len x kv_dim`.
     pub k_cache: Vec<f32>,
+    /// value cache: `seq_len x kv_dim`.
     pub v_cache: Vec<f32>,
 }
 

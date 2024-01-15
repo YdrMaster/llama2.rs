@@ -2,16 +2,23 @@
 use memmap2::Mmap;
 
 pub(super) struct Weights<'a> {
+    /// `vocab_size * dim`.
     pub token_embedding_table: &'a [f32],
+    /// `n_layers * dim`.
     pub rms_att_weight: &'a [f32],
+    /// `n_layers * dim`.
     pub rms_ffn_weight: &'a [f32],
+    /// `n_layers * dim * dim`.
     pub wq: &'a [f32],
+    /// `n_layers * kv_dim * dim`.
     pub wk: &'a [f32],
+    /// `n_layers * kv_dim * dim`.
     pub wv: &'a [f32],
     pub wo: &'a [f32],
     pub w1: &'a [f32],
     pub w2: &'a [f32],
     pub w3: &'a [f32],
+    /// `dim`.
     pub rms_final_weight: &'a [f32],
     pub wcls: &'a [f32],
 }
@@ -35,8 +42,8 @@ impl<'a> Weights<'a> {
         let (token_embedding_table, data) = data.split_at(vocab_size * dim);
         let (rms_att_weight, data) = data.split_at(n_layers * dim);
         let (wq, data) = data.split_at(n_layers * dim * dim);
-        let (wk, data) = data.split_at(n_layers * dim * kv_dim);
-        let (wv, data) = data.split_at(n_layers * dim * kv_dim);
+        let (wk, data) = data.split_at(n_layers * kv_dim * dim);
+        let (wv, data) = data.split_at(n_layers * kv_dim * dim);
         let (wo, data) = data.split_at(n_layers * dim * dim);
         let (rms_ffn_weight, data) = data.split_at(n_layers * dim);
         let (w1, data) = data.split_at(n_layers * dim * hidden_dim);

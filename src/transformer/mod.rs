@@ -71,117 +71,97 @@ impl Transformer {
         for (l, layer) in self.layers.iter_mut().enumerate() {
             let Layer { k_cache, v_cache } = layer;
 
+            // x1 = rmsnorm(x0, rms_att_weight[l]);
             rmsnorm(&mut s.x1, &s.x0, &slice!(w.rms_att_weight; dim; [l]));
-
-            // matmul(q, &s.x1, &slice!(w.wq; dim * dim; [l]));
             {
+                let k = dim;
+                let n = tok_len;
+                let b = s.x1.as_ptr();
+                let rsb = 1;
+                let csb = k as _;
+                let alpha = 1.;
+                let beta = 0.;
+                // q = wq[l] * x1;
                 let m = dim;
-                let k = dim;
-                let n = tok_len;
-                let alpha = 1.;
-                let beta = 0.;
                 let a = slice!(w.wq; dim * dim; [l]).as_ptr();
-                let b = s.x1.as_ptr();
+                let rsa = k as _;
+                let csa = 1;
                 let c = s.q.as_mut_ptr();
-                let rsa = k as _;
-                let csa = 1;
-                let rsb = 1;
-                let csb = k as _;
                 let rsc = 1;
                 let csc = m as _;
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
-            }
-            // matmul(k, &s.x1, &slice!(w.wk; kv_dim * dim; [l]));
-            {
+                // k = wk[l] * x1;
                 let m = kv_dim;
-                let k = dim;
-                let n = tok_len;
-                let alpha = 1.;
-                let beta = 0.;
                 let a = slice!(w.wk; kv_dim * dim; [l]).as_ptr();
-                let b = s.x1.as_ptr();
+                let rsa = k as _;
+                let csa = 1;
                 let c = slice!(k_cache; kv_dim; [pos]).as_mut_ptr();
-                let rsa = k as _;
-                let csa = 1;
-                let rsb = 1;
-                let csb = k as _;
                 let rsc = 1;
                 let csc = m as _;
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
-            }
-            // matmul(v, &s.x1, &slice!(w.wv; kv_dim * dim; [l]));
-            {
+                // v = wv[l] * x1;
                 let m = kv_dim;
-                let k = dim;
-                let n = tok_len;
-                let alpha = 1.;
-                let beta = 0.;
                 let a = slice!(w.wv; kv_dim * dim; [l]).as_ptr();
-                let b = s.x1.as_ptr();
-                let c = slice!(v_cache; kv_dim; [pos]).as_mut_ptr();
                 let rsa = k as _;
                 let csa = 1;
-                let rsb = 1;
-                let csb = k as _;
+                let c = slice!(v_cache; kv_dim; [pos]).as_mut_ptr();
                 let rsc = 1;
                 let csc = m as _;
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
+            // rotary embeddings
             for i in 0..tok_len {
                 let pos = pos + i;
-                self.embedder.run(pos, &mut slice!(s.q; dim; [i]));
+                self.embedder.run(pos, &mut slice!(s.q    ; dim   ; [i]  ));
                 self.embedder.run(pos, &mut slice!(k_cache; kv_dim; [pos]));
             }
-
+            // clear x1 for multi-head attention.
             s.x1.fill(0.);
             for h in 0..n_head {
                 let att = &mut slice!(s.attention; tok_len * seq_len; [h]);
-
-                {
-                    let m = tok_len;
-                    let k = head_size;
-                    let n = pos + tok_len;
-                    let alpha = head_div;
-                    let beta = 0.;
-                    let a = slice!(s.q; head_size; [h]).as_ptr();
-                    let b = slice!(k_cache; head_size; [h / kv_mul]).as_ptr();
-                    let c = att.as_mut_ptr();
-                    let rsa = kv_dim as _;
-                    let csa = 1;
-                    let rsb = 1;
-                    let csb = kv_dim as _;
-                    let rsc = seq_len as _;
-                    let csc = 1;
-                    unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
-                }
-
+                let att_len = pos + tok_len;
+                // att = head_div * q * k;
+                let m = tok_len;
+                let k = head_size;
+                let n = att_len;
+                let alpha = head_div;
+                let beta = 0.;
+                let a = slice!(s.q; head_size; [h]).as_ptr();
+                let b = slice!(k_cache; head_size; [h / kv_mul]).as_ptr();
+                let c = att.as_mut_ptr();
+                let rsa = kv_dim as _;
+                let csa = 1;
+                let rsb = 1;
+                let csb = kv_dim as _;
+                let rsc = seq_len as _;
+                let csc = 1;
+                unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
+                // att = softmax(att);
                 for i in 0..tok_len {
-                    let att = &mut slice!(att; seq_len; [i]);
+                    let att = &mut slice!(att; seq_len; [i])[..att_len];
                     let (att, tail) = att.split_at_mut(pos + i + 1);
                     softmax(att);
                     tail.fill(0.);
                 }
-
-                {
-                    let m = head_size;
-                    let k = pos + tok_len;
-                    let n = tok_len;
-                    let alpha = 1.;
-                    let beta = 1.;
-                    let a = slice!(v_cache; head_size; [h / kv_mul]).as_ptr();
-                    let b = att.as_ptr();
-                    let c = slice!(s.x1; head_size; [h]).as_mut_ptr();
-                    let rsa = 1;
-                    let csa = kv_dim as _;
-                    let rsb = 1;
-                    let csb = seq_len as _;
-                    let rsc = 1;
-                    let csc = kv_dim as _;
-                    unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
-                }
+                // x1 += att * v;
+                let m = head_size;
+                let k = att_len;
+                let n = tok_len;
+                let alpha = 1.;
+                let beta = 1.;
+                let a = slice!(v_cache; head_size; [h / kv_mul]).as_ptr();
+                let b = att.as_ptr();
+                let c = slice!(s.x1; head_size; [h]).as_mut_ptr();
+                let rsa = 1;
+                let csa = kv_dim as _;
+                let rsb = 1;
+                let csb = seq_len as _;
+                let rsc = 1;
+                let csc = kv_dim as _;
+                unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
 
-            // sgemm(&mut s.x0, &s.x1, &slice!(w.wo; dim * dim; [l]));
+            // x0 += wo[l] * x1;
             {
                 let m = dim;
                 let k = dim;
@@ -199,9 +179,8 @@ impl Transformer {
                 let csc = m as _;
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
-
+            // x1 = rmsnorm(x0, rms_ffn_weight[l]);
             rmsnorm(&mut s.x1, &s.x0, &slice!(w.rms_ffn_weight; dim; [l]));
-
             {
                 let m = hidden_dim;
                 let k = dim;
@@ -215,19 +194,18 @@ impl Transformer {
                 let csb = k as _;
                 let rsc = 1;
                 let csc = m as _;
-                // matmul(h.0, &s.x1, &slice!(w.w1; hidden_dim * dim; [l]));
+                // h0 = w1[l] * x1;
                 let a = slice!(w.w1; hidden_dim * dim; [l]).as_ptr();
                 let c = h.0.as_mut_ptr();
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
-                // matmul(h.1, &s.x1, &slice!(w.w3; hidden_dim * dim; [l]));
+                // h1 = w3[l] * x1;
                 let a = slice!(w.w3; hidden_dim * dim; [l]).as_ptr();
                 let c = h.1.as_mut_ptr();
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
-
-            zip(&mut *h.0, &*h.1).for_each(|(hb0, hb1)| *hb0 *= sigmoid(*hb0) * *hb1);
-
-            // sgemm(&mut s.x0, h.0, &slice!(w.w2; dim * hidden_dim; [l]));
+            // h0 *= sigmoid(h0) * h1;
+            zip(&mut *h.0, &*h.1).for_each(|(h0, h1)| *h0 *= sigmoid(*h0) * *h1);
+            // x0 += w2[l] * h0;
             {
                 let m = dim;
                 let k = hidden_dim;
@@ -255,7 +233,7 @@ impl Transformer {
         let w = Weights::new(&self.mmap);
 
         rmsnorm_inplace(&mut x, w.rms_final_weight);
-        // matmul(&mut self.logits, &x, w.wcls);
+        // logits = wcls * x;
         {
             let m = self.logits.len();
             let k = x.len();
