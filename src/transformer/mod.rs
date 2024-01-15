@@ -2,7 +2,7 @@
 mod weights;
 
 use super::{
-    kernel::{matmul, rmsnorm, rmsnorm_inplace, sigmoid, slice, softmax},
+    kernel::{gemm, rmsnorm, rmsnorm_inplace, sigmoid, slice, softmax},
     tokenizer::utok,
 };
 use config::Config;
@@ -90,11 +90,7 @@ impl Transformer {
                 let csb = k as _;
                 let rsc = 1;
                 let csc = m as _;
-                unsafe {
-                    matrixmultiply::sgemm(
-                        m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc,
-                    )
-                };
+                unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
             // matmul(k, &s.x1, &slice!(w.wk; kv_dim * dim; [l]));
             {
@@ -112,11 +108,7 @@ impl Transformer {
                 let csb = k as _;
                 let rsc = 1;
                 let csc = m as _;
-                unsafe {
-                    matrixmultiply::sgemm(
-                        m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc,
-                    )
-                };
+                unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
             // matmul(v, &s.x1, &slice!(w.wv; kv_dim * dim; [l]));
             {
@@ -134,11 +126,7 @@ impl Transformer {
                 let csb = k as _;
                 let rsc = 1;
                 let csc = m as _;
-                unsafe {
-                    matrixmultiply::sgemm(
-                        m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc,
-                    )
-                };
+                unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
             for i in 0..tok_len {
                 let pos = pos + i;
@@ -165,11 +153,7 @@ impl Transformer {
                     let csb = kv_dim as _;
                     let rsc = seq_len as _;
                     let csc = 1;
-                    unsafe {
-                        matrixmultiply::sgemm(
-                            m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc,
-                        )
-                    };
+                    unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
                 }
 
                 for i in 0..tok_len {
@@ -194,11 +178,7 @@ impl Transformer {
                     let csb = seq_len as _;
                     let rsc = 1;
                     let csc = kv_dim as _;
-                    unsafe {
-                        matrixmultiply::sgemm(
-                            m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc,
-                        )
-                    };
+                    unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
                 }
             }
 
@@ -218,11 +198,7 @@ impl Transformer {
                 let csb = k as _;
                 let rsc = 1;
                 let csc = m as _;
-                unsafe {
-                    matrixmultiply::sgemm(
-                        m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc,
-                    )
-                };
+                unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
 
             rmsnorm(&mut s.x1, &s.x0, &slice!(w.rms_ffn_weight; dim; [l]));
@@ -243,19 +219,11 @@ impl Transformer {
                 // matmul(h.0, &s.x1, &slice!(w.w1; hidden_dim * dim; [l]));
                 let a = slice!(w.w1; hidden_dim * dim; [l]).as_ptr();
                 let c = h.0.as_mut_ptr();
-                unsafe {
-                    matrixmultiply::sgemm(
-                        m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc,
-                    )
-                };
+                unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
                 // matmul(h.1, &s.x1, &slice!(w.w3; hidden_dim * dim; [l]));
                 let a = slice!(w.w3; hidden_dim * dim; [l]).as_ptr();
                 let c = h.1.as_mut_ptr();
-                unsafe {
-                    matrixmultiply::sgemm(
-                        m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc,
-                    )
-                };
+                unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
 
             zip(&mut *h.0, &*h.1).for_each(|(hb0, hb1)| *hb0 *= sigmoid(*hb0) * *hb1);
@@ -276,11 +244,7 @@ impl Transformer {
                 let csb = k as _;
                 let rsc = 1;
                 let csc = m as _;
-                unsafe {
-                    matrixmultiply::sgemm(
-                        m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc,
-                    )
-                };
+                unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
         }
 
@@ -296,7 +260,24 @@ impl Transformer {
         let w = Weights::new(&self.mmap);
 
         rmsnorm_inplace(&mut x, w.rms_final_weight);
-        matmul(&mut self.logits, &x, w.wcls);
+        // matmul(&mut self.logits, &x, w.wcls);
+        {
+            let m = self.logits.len();
+            let k = x.len();
+            let n = 1;
+            let alpha = 1.;
+            let beta = 0.;
+            let a = w.wcls.as_ptr();
+            let b = x.as_ptr();
+            let c = self.logits.as_mut_ptr();
+            let rsa = k as _;
+            let csa = 1;
+            let rsb = 1;
+            let csb = k as _;
+            let rsc = 1;
+            let csc = m as _;
+            unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
+        }
 
         &mut self.logits
     }

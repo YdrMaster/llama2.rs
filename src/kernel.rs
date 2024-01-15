@@ -43,21 +43,47 @@ fn rmsnorm_reduce(x: &[f32]) -> f32 {
     (y / (x.len() as f32) + 1e-5).powf(-0.5)
 }
 
-/// y = wx.
-pub(crate) fn matmul(y: &mut [f32], x: &[f32], w: &[f32]) {
-    let n = x.len();
-    y.iter_mut().enumerate().for_each(|(i, y)| {
-        *y = zip(&w[i * n..], x).map(|(&w, &x)| w * x).sum::<f32>();
-    });
+/// c := α. a: <mxk> . b: <kxn> + β. c: <mxn>
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+pub(crate) unsafe fn gemm(
+    m: usize,
+    k: usize,
+    n: usize,
+    alpha: f32,
+    a: *const f32,
+    rsa: isize,
+    csa: isize,
+    b: *const f32,
+    rsb: isize,
+    csb: isize,
+    beta: f32,
+    c: *mut f32,
+    rsc: isize,
+    csc: isize,
+) {
+    gemm::gemm(
+        m,
+        n,
+        k,
+        c,
+        csc,
+        rsc,
+        beta != 0.,
+        a,
+        csa,
+        rsa,
+        b,
+        csb,
+        rsb,
+        beta,
+        alpha,
+        false,
+        false,
+        false,
+        gemm::Parallelism::None,
+    )
 }
-
-/// y += wx.
-// pub(crate) fn sgemm(y: &mut [f32], x: &[f32], w: &[f32]) {
-//     let n = x.len();
-//     y.iter_mut().enumerate().for_each(|(i, y)| {
-//         zip(&w[i * n..], x).for_each(|(&w, &x)| *y += w * x);
-//     });
-// }
 
 pub(crate) fn softmax(x: &mut [f32]) {
     let max = *x.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();

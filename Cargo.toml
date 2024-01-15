@@ -7,4 +7,4 @@ edition = "2021"
 
 [dependencies]
 memmap2 = "0.9"
-matrixmultiply = "0.3"
+gemm = "0.17"
