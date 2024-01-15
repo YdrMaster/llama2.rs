@@ -121,7 +121,18 @@ fn generate(
 
     let start = Instant::now();
 
+    // 一次性输入提示词的所有 token
     transformer.update(tokens, 0);
+    // 一个一个输入提示词的 token 但不计算 output
+    // for (i, &t) in tokens.iter().enumerate() {
+    // transformer.update(&[t], i as _);
+    // }
+    // 一个一个输入提示词的 token 并计算 output
+    // for (i, &t) in tokens.iter().enumerate() {
+    // let _ = transformer.forward(t, i as _);
+    // }
+
+    let mid = Instant::now();
 
     let mut pos = tokens.len();
     let mut token = *last;
@@ -139,6 +150,7 @@ fn generate(
     }
 
     let end = Instant::now();
+    println!("init time: {:?}", mid - start);
     println!(
         "achieved tok/s: {}",
         pos as f64 / (end - start).as_secs_f64()
