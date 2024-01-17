@@ -1,3 +1,4 @@
+mod arguments;
 mod kernel;
 mod sampler;
 mod tokenizer;
@@ -7,6 +8,7 @@ use core::panic;
 use sampler::Sampler;
 use std::{
     fs::canonicalize,
+    io::Write,
     path::PathBuf,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -113,9 +115,6 @@ fn generate(
     prompt: String,
     steps: usize,
 ) {
-    let mut text = String::with_capacity(1024);
-    text.push_str(&prompt);
-
     let prompt_tokens = tokenizer.encode(&prompt, true, false);
     let (last, tokens) = prompt_tokens.split_last().unwrap();
 
@@ -132,6 +131,8 @@ fn generate(
     // let _ = transformer.forward(t, i as _);
     // }
 
+    print!("{prompt}");
+
     let mid = Instant::now();
 
     let mut pos = tokens.len();
@@ -145,15 +146,17 @@ fn generate(
             break;
         }
 
-        text.push_str(tokenizer.decode(token, next));
+        print!("{}", tokenizer.decode(token, next));
+        std::io::stdout().flush().unwrap();
+
         token = next;
     }
 
     let end = Instant::now();
+    println!();
     println!("init time: {:?}", mid - start);
     println!(
         "achieved tok/s: {}",
         pos as f64 / (end - start).as_secs_f64()
     );
-    println!("{text}");
 }

@@ -1,5 +1,4 @@
-﻿use super::config::Config;
-use crate::kernel::slice;
+﻿use crate::{arguments::Arguments, kernel::slice};
 
 pub(super) struct RunState {
     /// state buffer: `tok_len x dim`.
@@ -17,14 +16,19 @@ pub(super) struct RunState {
 }
 
 impl RunState {
-    pub fn new(tok_len: usize, config: &Config) -> Self {
-        let dim = config.dim();
+    pub fn new(
+        tok_len: usize,
+        dim: usize,
+        hidden_dim: usize,
+        n_heads: usize,
+        seq_len: usize,
+    ) -> Self {
         Self {
             x0: vec![0.; tok_len * dim],
             x1: vec![0.; tok_len * dim],
             q: vec![0.; tok_len * dim],
-            hidden: vec![0.; tok_len * config.hidden_dim() * 2],
-            attention: vec![0.; tok_len * config.n_heads() * config.seq_len()],
+            hidden: vec![0.; tok_len * hidden_dim * 2],
+            attention: vec![0.; tok_len * n_heads * seq_len],
         }
     }
 }
@@ -38,7 +42,7 @@ pub(super) struct Layer {
 }
 
 impl Layer {
-    pub fn new(config: &Config) -> Self {
+    pub fn new(config: &dyn Arguments) -> Self {
         let len = config.seq_len() * config.kv_dim();
         Self {
             k_cache: vec![0.; len],
@@ -53,7 +57,7 @@ pub(super) struct RotaryEmbedder {
 }
 
 impl RotaryEmbedder {
-    pub fn new(config: &Config) -> Self {
+    pub fn new(config: &dyn Arguments) -> Self {
         let dim = config.dim();
         let n_heads = config.n_heads();
         let seq_len = config.seq_len();

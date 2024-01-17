@@ -1,16 +1,12 @@
-﻿mod config;
-mod state;
-mod weights;
+﻿mod state;
 
 use super::{
     kernel::{gemm, rmsnorm, rmsnorm_inplace, sigmoid, slice, softmax},
     tokenizer::utok,
 };
-use config::Config;
-use memmap2::Mmap;
+use crate::arguments::{AllInOneBin, Arguments, SafeTensors};
 use state::{Layer, RotaryEmbedder, RunState};
-use std::{fs::File, iter::zip, path::Path};
-use weights::Weights;
+use std::{ffi::OsStr, fs::File, iter::zip, path::Path};
 
 /// `upos` for position id.
 #[allow(non_camel_case_types)]
@@ -20,59 +16,66 @@ pub(super) struct Transformer {
     layers: Vec<Layer>,
     logits: Vec<f32>,
     embedder: RotaryEmbedder,
-    mmap: Mmap,
+    arguments: Box<dyn Arguments>,
 }
 
 impl Transformer {
     pub fn read_checkpoint(checkpoint: impl AsRef<Path>) -> Self {
         let checkpoint = checkpoint.as_ref();
-        let file = File::open(checkpoint)
-            .unwrap_or_else(|_| panic!("Could not open checkpoint {}", checkpoint.display()));
-
-        let mmap = unsafe { Mmap::map(&file) }.unwrap();
-        let config = Config::map(&mmap).0;
+        let arguments: Box<dyn Arguments> = if checkpoint.extension()
+            == Some(OsStr::new("safetensors"))
+        {
+            let config = checkpoint.parent().unwrap().join("config.json");
+            let config = File::open(&config)
+                .unwrap_or_else(|_| panic!("Could not open config {}", config.display()));
+            let tensors = File::open(checkpoint)
+                .unwrap_or_else(|_| panic!("Could not open safetensors {}", checkpoint.display()));
+            Box::new(SafeTensors::new(config, tensors))
+        } else {
+            let file = File::open(checkpoint)
+                .unwrap_or_else(|_| panic!("Could not open checkpoint {}", checkpoint.display()));
+            Box::new(AllInOneBin::new(file))
+        };
 
         Self {
-            layers: vec![Layer::new(config); config.n_layers()],
-            logits: vec![0.; config.vocab_size()],
-            embedder: RotaryEmbedder::new(config),
-            mmap,
+            layers: vec![Layer::new(&*arguments); arguments.n_layers()],
+            logits: vec![0.; arguments.vocab_size()],
+            embedder: RotaryEmbedder::new(&*arguments),
+            arguments,
         }
     }
 
     #[inline]
     pub fn vocab_size(&self) -> usize {
-        Config::map(&self.mmap).0.vocab_size()
+        self.arguments.vocab_size()
     }
 
     pub fn update(&mut self, tokens: &[utok], pos: upos) -> Vec<f32> {
-        let (config, _) = Config::map(&self.mmap);
         let tok_len = tokens.len();
         let pos = pos as usize;
 
-        let dim = config.dim();
-        let hidden_dim = config.hidden_dim();
-        let seq_len = config.seq_len();
-        let kv_dim = config.kv_dim();
+        let dim = self.arguments.dim();
+        let hidden_dim = self.arguments.hidden_dim();
+        let seq_len = self.arguments.seq_len();
+        let kv_dim = self.arguments.kv_dim();
 
-        let n_head = config.n_heads();
-        let kv_mul = n_head / config.n_kv_heads();
+        let n_head = self.arguments.n_heads();
+        let kv_mul = n_head / self.arguments.n_kv_heads();
         let head_size = dim / n_head;
         let head_div = 1. / (head_size as f32).sqrt();
 
-        let w = Weights::new(&self.mmap);
-        let mut s = RunState::new(tok_len, config);
+        let mut s = RunState::new(tok_len, dim, hidden_dim, n_head, seq_len);
         let h = s.hidden.split_at_mut(tok_len * hidden_dim);
 
-        for (i, token) in tokens.iter().map(|&t| t as usize).enumerate() {
-            slice!(s.x0; dim; [i]).copy_from_slice(&slice!(w.token_embedding_table; dim; [token]));
+        for (i, &token) in tokens.iter().enumerate() {
+            slice!(s.x0; dim; [i]).copy_from_slice(self.arguments.token_embedding_table(token));
         }
 
         for (l, layer) in self.layers.iter_mut().enumerate() {
             let Layer { k_cache, v_cache } = layer;
 
             // x1 = rmsnorm(x0, rms_att_weight[l]);
-            rmsnorm(&mut s.x1, &s.x0, &slice!(w.rms_att_weight; dim; [l]));
+            rmsnorm(&mut s.x1, &s.x0, self.arguments.rms_att_weight(l));
             {
                 let k = dim;
                 let n = tok_len;
@@ -83,7 +86,7 @@ impl Transformer {
                 let beta = 0.;
                 // q = wq[l] * x1;
                 let m = dim;
-                let a = slice!(w.wq; dim * dim; [l]).as_ptr();
+                let a = self.arguments.wq(l).as_ptr();
                 let rsa = k as _;
                 let csa = 1;
                 let c = s.q.as_mut_ptr();
@@ -92,7 +95,7 @@ impl Transformer {
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
                 // k = wk[l] * x1;
                 let m = kv_dim;
-                let a = slice!(w.wk; kv_dim * dim; [l]).as_ptr();
+                let a = self.arguments.wk(l).as_ptr();
                 let rsa = k as _;
                 let csa = 1;
                 let c = slice!(k_cache; kv_dim; [pos]).as_mut_ptr();
@@ -101,7 +104,7 @@ impl Transformer {
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
                 // v = wv[l] * x1;
                 let m = kv_dim;
-                let a = slice!(w.wv; kv_dim * dim; [l]).as_ptr();
+                let a = self.arguments.wv(l).as_ptr();
                 let rsa = k as _;
                 let csa = 1;
                 let c = slice!(v_cache; kv_dim; [pos]).as_mut_ptr();
@@ -168,7 +171,7 @@ impl Transformer {
                 let n = tok_len;
                 let alpha = 1.;
                 let beta = 1.;
-                let a = slice!(w.wo; dim * dim; [l]).as_ptr();
+                let a = self.arguments.wo(l).as_ptr();
                 let b = s.x1.as_ptr();
                 let c = s.x0.as_mut_ptr();
                 let rsa = k as _;
@@ -180,7 +183,7 @@ impl Transformer {
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
             // x1 = rmsnorm(x0, rms_ffn_weight[l]);
-            rmsnorm(&mut s.x1, &s.x0, &slice!(w.rms_ffn_weight; dim; [l]));
+            rmsnorm(&mut s.x1, &s.x0, self.arguments.rms_ffn_weight(l));
             {
                 let m = hidden_dim;
                 let k = dim;
@@ -195,11 +198,11 @@ impl Transformer {
                 let rsc = 1;
                 let csc = m as _;
                 // h0 = w1[l] * x1;
-                let a = slice!(w.w1; hidden_dim * dim; [l]).as_ptr();
+                let a = self.arguments.w1(l).as_ptr();
                 let c = h.0.as_mut_ptr();
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
                 // h1 = w3[l] * x1;
-                let a = slice!(w.w3; hidden_dim * dim; [l]).as_ptr();
+                let a = self.arguments.w3(l).as_ptr();
                 let c = h.1.as_mut_ptr();
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
@@ -212,7 +215,7 @@ impl Transformer {
                 let n = tok_len;
                 let alpha = 1.;
                 let beta = 1.;
-                let a = slice!(w.w2; dim * hidden_dim; [l]).as_ptr();
+                let a = self.arguments.w2(l).as_ptr();
                 let b = h.0.as_ptr();
                 let c = s.x0.as_mut_ptr();
                 let rsa = k as _;
@@ -230,9 +233,8 @@ impl Transformer {
 
     pub fn forward(&mut self, token: utok, pos: upos) -> &mut [f32] {
         let mut x = self.update(&[token], pos);
-        let w = Weights::new(&self.mmap);
 
-        rmsnorm_inplace(&mut x, w.rms_final_weight);
+        rmsnorm_inplace(&mut x, self.arguments.rms_final_weight());
         // logits = wcls * x;
         {
             let m = self.logits.len();
@@ -240,7 +242,7 @@ impl Transformer {
             let n = 1;
             let alpha = 1.;
             let beta = 0.;
-            let a = w.wcls.as_ptr();
+            let a = self.arguments.wcls().as_ptr();
             let b = x.as_ptr();
             let c = self.logits.as_mut_ptr();
             let rsa = k as _;
