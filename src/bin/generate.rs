@@ -70,6 +70,12 @@ fn main() {
     if !(0.0..1.0).contains(&args.top_p) {
         args.top_p = 0.9;
     }
+    if args.prompt.ends_with(".txt") {
+        let path = PathBuf::from(&args.prompt);
+        if path.is_file() {
+            args.prompt = std::fs::read_to_string(path).unwrap();
+        }
+    }
 
     let mut transformer = Transformer::read_checkpoint(&args.check_point);
     let tokenizer = Tokenizer::new(&args.tokenizer_path, transformer.vocab_size());
@@ -107,6 +113,7 @@ fn generate(
     prompt: String,
     steps: usize,
 ) {
+    let prompt = prompt.trim();
     let prompt_tokens = tokenizer.encode(&prompt, true, false);
     let (last, tokens) = prompt_tokens.split_last().unwrap();
 
