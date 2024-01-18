@@ -1,6 +1,6 @@
 ﻿use super::{kernel::softmax, tokenizer::utok};
 
-pub(super) struct Sampler {
+pub struct Sampler {
     temperature: f32,
     top_p: f32,
     rng_state: u64,

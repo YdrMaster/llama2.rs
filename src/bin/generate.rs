@@ -1,19 +1,11 @@
-mod arguments;
-mod kernel;
-mod sampler;
-mod tokenizer;
-mod transformer;
-
 use core::panic;
-use sampler::Sampler;
+use llama2_rs::{Sampler, Tokenizer, Transformer, BOS};
 use std::{
     fs::canonicalize,
     io::Write,
     path::PathBuf,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
-use tokenizer::{Tokenizer, BOS};
-use transformer::Transformer;
 
 fn main() {
     struct Args {

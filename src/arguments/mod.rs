@@ -4,9 +4,9 @@ mod safetensors;
 use crate::tokenizer::utok;
 
 pub(crate) use all_in_one_bin::AllInOneBin;
-pub(crate) use safetensors::SafeTensors;
+pub use safetensors::SafeTensors;
 
-pub(crate) trait Arguments {
+pub trait Arguments {
     fn dim(&self) -> usize;
     fn hidden_dim(&self) -> usize;
     fn n_layers(&self) -> usize;

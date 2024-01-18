@@ -1,9 +1,15 @@
 ﻿use super::Arguments;
 use crate::{kernel::slice, tokenizer::utok};
 use memmap2::Mmap;
-use std::{borrow::Cow, collections::HashMap, fs::File, io::Read, ops::Range};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fs::File,
+    io::{Read, Write},
+    ops::Range,
+};
 
-pub(crate) struct SafeTensors {
+pub struct SafeTensors {
     config: LLamaConfig,
     token_embedding_table: Vec<f32>,
     rms_att_weight: Vec<f32>,
@@ -154,6 +160,132 @@ impl SafeTensors {
             wcls,
         }
     }
+
+    pub fn export(&self, stream: &mut dyn Write) -> String {
+        let vocab_size = self.vocab_size();
+        let n_layers = self.n_layers();
+        let dim = self.dim();
+        let kv_dim = self.kv_dim();
+        let hidden_dim = self.hidden_dim();
+
+        let mut meta_json = MetaJson {
+            tensors: HashMap::new(),
+            meta: HashMap::new(),
+        };
+        let tensors = &mut meta_json.tensors;
+        let mut range = 0usize..0usize;
+
+        macro_rules! insert {
+            ($vec:expr, $name:expr, $shape:expr) => {
+                range.end += $vec.len() * std::mem::size_of::<f32>();
+                tensors.insert(
+                    $name,
+                    Tensor {
+                        dtype: "F32".to_string(),
+                        shape: $shape,
+                        data_offsets: range.clone(),
+                    },
+                );
+                range.start = range.end;
+            };
+        }
+
+        insert!(
+            self.token_embedding_table,
+            "model.embed_tokens.weight".to_string(),
+            vec![vocab_size, dim]
+        );
+        for l in 0..n_layers {
+            insert!(
+                self.rms_att_weight(l),
+                format!("model.layers.{l}.input_layernorm.weight"),
+                vec![dim]
+            );
+            insert!(
+                self.wq(l),
+                format!("model.layers.{l}.self_attn.q_proj.weight"),
+                vec![dim, dim]
+            );
+            insert!(
+                self.wk(l),
+                format!("model.layers.{l}.self_attn.k_proj.weight"),
+                vec![kv_dim, dim]
+            );
+            insert!(
+                self.wv(l),
+                format!("model.layers.{l}.self_attn.v_proj.weight"),
+                vec![kv_dim, dim]
+            );
+            insert!(
+                self.wo(l),
+                format!("model.layers.{l}.self_attn.o_proj.weight"),
+                vec![dim, dim]
+            );
+            insert!(
+                self.rms_ffn_weight(l),
+                format!("model.layers.{l}.post_attention_layernorm.weight"),
+                vec![dim]
+            );
+            insert!(
+                self.w1(l),
+                format!("model.layers.{l}.mlp.gate_proj.weight"),
+                vec![hidden_dim, dim]
+            );
+            insert!(
+                self.w2(l),
+                format!("model.layers.{l}.mlp.down_proj.weight"),
+                vec![dim, hidden_dim]
+            );
+            insert!(
+                self.w3(l),
+                format!("model.layers.{l}.mlp.up_proj.weight"),
+                vec![hidden_dim, dim]
+            );
+        }
+        insert!(
+            self.rms_final_weight(),
+            "model.norm.weight".to_string(),
+            vec![dim]
+        );
+        insert!(
+            self.wcls(),
+            "lm_head.weight".to_string(),
+            vec![vocab_size, dim]
+        );
+
+        let meta_json = serde_json::to_string(&meta_json).unwrap();
+        stream
+            .write_all(&(meta_json.len() as u64).to_le_bytes())
+            .unwrap();
+        write!(stream, "{}", meta_json).unwrap();
+
+        fn write_slice<T>(stream: &mut dyn Write, slice: &[T]) {
+            let slice = unsafe {
+                std::slice::from_raw_parts(
+                    slice.as_ptr().cast::<u8>(),
+                    slice.len() * std::mem::size_of::<T>(),
+                )
+            };
+            stream.write_all(slice).unwrap();
+        }
+
+        write_slice(stream, &self.token_embedding_table);
+        for l in 0..n_layers {
+            write_slice(stream, self.rms_att_weight(l));
+            write_slice(stream, self.wq(l));
+            write_slice(stream, self.wk(l));
+            write_slice(stream, self.wv(l));
+            write_slice(stream, self.wo(l));
+            write_slice(stream, self.rms_ffn_weight(l));
+            write_slice(stream, self.w1(l));
+            write_slice(stream, self.w2(l));
+            write_slice(stream, self.w3(l));
+        }
+        write_slice(stream, self.rms_final_weight());
+        write_slice(stream, self.wcls());
+
+        serde_json::to_string_pretty(&self.config).unwrap()
+    }
 }
 
 fn cast_slice<'a>(dtype: &str, slice: &'a [u8]) -> Cow<'a, [f32]> {
@@ -264,7 +396,7 @@ impl Arguments for SafeTensors {
     }
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct LLamaConfig {
     hidden_size: usize,
     intermediate_size: usize,
@@ -275,7 +407,7 @@ struct LLamaConfig {
     vocab_size: usize,
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct MetaJson {
     #[serde(flatten)]
     tensors: HashMap<String, Tensor>,
@@ -284,7 +416,7 @@ struct MetaJson {
     meta: HashMap<String, serde_json::Value>,
 }
 
-#[derive(serde::Deserialize, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct Tensor {
     dtype: String,
     shape: Vec<usize>,

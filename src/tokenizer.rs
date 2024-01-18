@@ -5,12 +5,12 @@ use std::{fs::File, path::Path};
 #[allow(non_camel_case_types)]
 pub(super) type utok = u32;
 
-pub(super) const _UNKNOWN: utok = 0;
-pub(super) const BOS: utok = 1;
-pub(super) const EOS: utok = 2;
+pub const _UNKNOWN: utok = 0;
+pub const BOS: utok = 1;
+pub const EOS: utok = 2;
 
 /// Tokenizer 的功能是建立 token 字符串和一个序号之间的关系。
-pub(super) struct Tokenizer {
+pub struct Tokenizer {
     /// tokenizer 文件的内存映射。
     mmap: Mmap,
     /// 保存每个序号对应的对象在文件中的偏移，用于从序号查询 token 字符串。

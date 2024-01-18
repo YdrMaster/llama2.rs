@@ -12,7 +12,7 @@ use std::{ffi::OsStr, fs::File, iter::zip, path::Path};
 #[allow(non_camel_case_types)]
 pub(super) type upos = u32;
 
-pub(super) struct Transformer {
+pub struct Transformer {
     layers: Vec<Layer>,
     logits: Vec<f32>,
     embedder: RotaryEmbedder,
