@@ -1,7 +1,7 @@
 ﻿use super::Arguments;
 use crate::{kernel::slice, tokenizer::utok};
 use memmap2::Mmap;
-use std::{collections::HashMap, fs::File, io::Read, ops::Range};
+use std::{borrow::Cow, collections::HashMap, fs::File, io::Read, ops::Range};
 
 pub(crate) struct SafeTensors {
     config: LLamaConfig,
@@ -50,32 +50,20 @@ impl SafeTensors {
         let mut rms_final_weight = vec![0.; dim];
         let mut wcls = vec![0.; vocab_size * dim];
 
-        #[inline(always)]
-        fn cast_slice<T>(slice: &[u8]) -> &[T] {
-            unsafe {
-                std::slice::from_raw_parts(
-                    slice.as_ptr().cast::<T>(),
-                    slice.len() / std::mem::size_of::<T>(),
-                )
-            }
-        }
-
         for (name, tensor) in meta_json.tensors {
             let path = name.split('.').collect::<Vec<_>>();
             match path.as_slice() {
                 ["model", "embed_tokens", "weight"] => {
-                    assert_eq!(tensor.dtype, "F32");
                     assert_eq!(&tensor.shape, &[vocab_size, dim]);
-                    let data = cast_slice(&data[tensor.data_offsets.clone()]);
-                    token_embedding_table.copy_from_slice(data);
+                    let data = cast_slice(&tensor.dtype, &data[tensor.data_offsets.clone()]);
+                    token_embedding_table.copy_from_slice(&data);
                 }
                 ["model", "layers", n, path @ .., "weight"] => {
-                    assert_eq!(tensor.dtype, "F32");
-                    let data = cast_slice(&data[tensor.data_offsets.clone()]);
+                    let data = cast_slice(&tensor.dtype, &data[tensor.data_offsets.clone()]);
                     let layer = n.parse::<usize>().unwrap();
 
                     let copy_slice =
-                        |dst: &mut [f32]| slice!(dst; data.len(); [layer]).copy_from_slice(data);
+                        |dst: &mut [f32]| slice!(dst; data.len(); [layer]).copy_from_slice(&data);
                     let perm_copy = |dst: &mut [f32]| {
                         let dst = &mut slice!(dst; data.len(); [layer]);
                         let (head, part) = if tensor.shape[0] == tensor.shape[1] {
@@ -137,16 +125,14 @@ impl SafeTensors {
                     };
                 }
                 ["model", "norm", "weight"] => {
-                    assert_eq!(tensor.dtype, "F32");
                     assert_eq!(&tensor.shape, &[dim]);
-                    let data = cast_slice(&data[tensor.data_offsets.clone()]);
-                    rms_final_weight.copy_from_slice(data);
+                    let data = cast_slice(&tensor.dtype, &data[tensor.data_offsets.clone()]);
+                    rms_final_weight.copy_from_slice(&data);
                 }
                 ["lm_head", "weight"] => {
-                    assert_eq!(tensor.dtype, "F32");
                     assert_eq!(&tensor.shape, &[vocab_size, dim]);
-                    let data: &[f32] = cast_slice(&data[tensor.data_offsets.clone()]);
-                    wcls.copy_from_slice(data);
+                    let data = cast_slice(&tensor.dtype, &data[tensor.data_offsets.clone()]);
+                    wcls.copy_from_slice(&data);
                 }
                 [..] => {}
             }
@@ -167,6 +153,36 @@ impl SafeTensors {
             rms_final_weight,
             wcls,
         }
+    }
+}
+
+fn cast_slice<'a>(dtype: &str, slice: &'a [u8]) -> Cow<'a, [f32]> {
+    #[inline]
+    fn reslice<T>(slice: &[u8]) -> &[T] {
+        unsafe {
+            std::slice::from_raw_parts(
+                slice.as_ptr().cast(),
+                slice.len() / std::mem::size_of::<T>(),
+            )
+        }
+    }
+
+    use half::{bf16, f16};
+    match dtype {
+        "F32" => Cow::Borrowed(reslice(slice)),
+        "F16" => Cow::Owned(
+            reslice::<f16>(slice)
+                .iter()
+                .map(|x| x.to_f32())
+                .collect::<Vec<_>>(),
+        ),
+        "BF16" => Cow::Owned(
+            reslice::<bf16>(slice)
+                .iter()
+                .map(|x| x.to_f32())
+                .collect::<Vec<_>>(),
+        ),
+        _ => todo!(),
     }
 }
 
@@ -264,6 +280,7 @@ struct MetaJson {
     #[serde(flatten)]
     tensors: HashMap<String, Tensor>,
     #[serde(rename = "__metadata__")]
+    #[allow(dead_code)]
     meta: HashMap<String, serde_json::Value>,
 }
 

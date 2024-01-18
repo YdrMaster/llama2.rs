@@ -270,6 +270,7 @@ name = "llama2-rs"
 version = "0.0.0"
 dependencies = [
  "gemm",
+ "half",
  "memmap2",
  "serde",
  "serde_json",
