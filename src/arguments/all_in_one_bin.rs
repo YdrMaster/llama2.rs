@@ -17,7 +17,7 @@ impl AllInOneBin {
     }
 
     #[inline(always)]
-    fn weights<'a>(&'a self) -> Weights<'a> {
+    fn weights(&self) -> Weights<'_> {
         let (config, weights) = self.config_weights();
         let (head, data, tail) = unsafe { weights.align_to::<f32>() };
         debug_assert!(head.is_empty() && tail.is_empty());

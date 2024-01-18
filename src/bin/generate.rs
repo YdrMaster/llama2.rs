@@ -114,7 +114,7 @@ fn generate(
     steps: usize,
 ) {
     let prompt = prompt.trim();
-    let prompt_tokens = tokenizer.encode(&prompt, true, false);
+    let prompt_tokens = tokenizer.encode(prompt, true, false);
     let (last, tokens) = prompt_tokens.split_last().unwrap();
 
     let start = Instant::now();
