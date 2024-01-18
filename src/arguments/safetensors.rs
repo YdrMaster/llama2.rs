@@ -2,13 +2,13 @@
 use crate::{kernel::slice, tokenizer::utok};
 use half::{bf16, f16};
 use memmap2::Mmap;
+use safetensors::{tensor::TensorInfo, Dtype};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
     fs::File,
     io::{Read, Write},
     iter::zip,
-    ops::Range,
 };
 
 pub struct SafeTensors {
@@ -60,14 +60,14 @@ impl SafeTensors {
 
         for (name, tensor) in meta_json.tensors {
             let path = name.split('.').collect::<Vec<_>>();
+            let data = cast_slice(data, &tensor);
+
             match path.as_slice() {
                 ["model", "embed_tokens", "weight"] => {
                     assert_eq!(&tensor.shape, &[vocab_size, dim]);
-                    let data = cast_slice(&tensor.dtype, &data[tensor.data_offsets.clone()]);
                     token_embedding_table.copy_from_slice(&data);
                 }
                 ["model", "layers", n, path @ .., "weight"] => {
-                    let data = cast_slice(&tensor.dtype, &data[tensor.data_offsets.clone()]);
                     let layer = n.parse::<usize>().unwrap();
 
                     let copy_slice =
@@ -134,12 +134,10 @@ impl SafeTensors {
                 }
                 ["model", "norm", "weight"] => {
                     assert_eq!(&tensor.shape, &[dim]);
-                    let data = cast_slice(&tensor.dtype, &data[tensor.data_offsets.clone()]);
                     rms_final_weight.copy_from_slice(&data);
                 }
                 ["lm_head", "weight"] => {
                     assert_eq!(&tensor.shape, &[vocab_size, dim]);
-                    let data = cast_slice(&tensor.dtype, &data[tensor.data_offsets.clone()]);
                     wcls.copy_from_slice(&data);
                 }
                 [..] => {}
@@ -183,58 +181,64 @@ impl SafeTensors {
         let order = tensors.keys().collect::<Vec<_>>();
         for &name in &order {
             let tensor = &tensors[name];
-            let dtype = match tensor.dtype.as_str() {
-                "F16" | "BF16" => {
-                    range.end += tensor.data_offsets.len() * 2;
-                    "F32"
+            let dtype = match tensor.dtype {
+                Dtype::F16 | Dtype::BF16 => {
+                    range.end += (tensor.data_offsets.1 - tensor.data_offsets.0) * 2;
+                    Dtype::F32
                 }
                 others => {
-                    range.end += tensor.data_offsets.len();
+                    range.end += tensor.data_offsets.1 - tensor.data_offsets.0;
                     others
                 }
-            }
-            .to_string();
+            };
             out_meta.tensors.insert(
                 name.clone(),
-                Tensor {
+                TensorInfo {
                     dtype,
                     shape: tensor.shape.clone(),
-                    data_offsets: range.clone(),
+                    data_offsets: (range.start, range.end),
                 },
             );
             range.start = range.end;
             println!("cast: \"{name}\".");
         }
-
-        stream
-            .write_all(&(meta_json.len() as u64).to_le_bytes())
-            .unwrap();
-        stream
-            .write_all(serde_json::to_string(&out_meta).unwrap().as_bytes())
-            .unwrap();
+        {
+            let str = serde_json::to_string(&out_meta).unwrap();
+            let len = str.len();
+            const ALIGN: usize = std::mem::size_of::<usize>();
+            let expand = (len + ALIGN - 1) & !(ALIGN - 1);
+            stream.write_all(&(expand as u64).to_le_bytes()).unwrap();
+            stream.write_all(str.as_bytes()).unwrap();
+            for _ in len..expand {
+                stream.write_all(&[32]).unwrap();
+            }
+        }
         for name in order {
             let tensor = &tensors[name];
-            let data = &data[tensor.data_offsets.clone()];
-            match tensor.dtype.as_str() {
-                "F16" => {
-                    let mut buf = vec![0u8; tensor.data_offsets.len() * std::mem::size_of::<f32>()];
+            let data = &data[tensor.data_offsets.0..tensor.data_offsets.1];
+            match tensor.dtype {
+                Dtype::F16 => {
                     let src = reslice::<f16>(data);
+                    let mut buf = vec![0u8; src.len() * std::mem::size_of::<f32>()];
                     let dst = reslice_mut::<f32>(&mut buf);
                     for (dst, src) in zip(dst, src) {
                         *dst = src.to_f32();
                     }
+                    print!("writeing {:>10} bytes... ", buf.len());
                     stream.write_all(&buf).unwrap();
                 }
-                "BF16" => {
-                    let mut buf = vec![0u8; tensor.data_offsets.len() * std::mem::size_of::<f32>()];
+                Dtype::BF16 => {
                     let src = reslice::<bf16>(data);
+                    let mut buf = vec![0u8; src.len() * std::mem::size_of::<f32>()];
                     let dst = reslice_mut::<f32>(&mut buf);
                     for (dst, src) in zip(dst, src) {
                         *dst = src.to_f32();
                     }
+                    print!("writeing {:>10} bytes... ", buf.len());
                     stream.write_all(&buf).unwrap();
                 }
                 _ => {
+                    print!("writeing {:>10} bytes... ", data.len());
                     stream.write_all(data).unwrap();
                 }
             }
@@ -242,7 +246,7 @@ impl SafeTensors {
         }
 
         serde_json::to_string_pretty(&LLamaConfig {
-            torch_dtype: "F32".to_string(),
+            torch_dtype: "float32".to_string(),
             ..config
         })
         .unwrap()
@@ -269,16 +273,17 @@ fn reslice_mut<T>(slice: &mut [u8]) -> &mut [T] {
     }
 }
 
-fn cast_slice<'a>(dtype: &str, slice: &'a [u8]) -> Cow<'a, [f32]> {
-    match dtype {
-        "F32" => Cow::Borrowed(reslice(slice)),
-        "F16" => Cow::Owned(
+fn cast_slice<'a>(data: &'a [u8], tensor: &TensorInfo) -> Cow<'a, [f32]> {
+    let slice = &data[tensor.data_offsets.0..tensor.data_offsets.1];
+    match tensor.dtype {
+        Dtype::F32 => Cow::Borrowed(reslice(slice)),
+        Dtype::F16 => Cow::Owned(
             reslice::<f16>(slice)
                 .iter()
                 .map(|x| x.to_f32())
                 .collect::<Vec<_>>(),
         ),
-        "BF16" => Cow::Owned(
+        Dtype::BF16 => Cow::Owned(
             reslice::<bf16>(slice)
                 .iter()
                 .map(|x| x.to_f32())
@@ -385,14 +390,7 @@ struct LLamaConfig {
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct MetaJson {
     #[serde(flatten)]
-    tensors: BTreeMap<String, Tensor>,
+    tensors: BTreeMap<String, TensorInfo>,
     #[serde(rename = "__metadata__")]
     meta: HashMap<String, serde_json::Value>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-struct Tensor {
-    dtype: String,
-    shape: Vec<usize>,
-    data_offsets: Range<usize>,
 }

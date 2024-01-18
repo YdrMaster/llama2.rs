@@ -9,5 +9,6 @@ edition = "2021"
 memmap2 = "0.9"
 gemm = "0.17"
 half = "2.3"
+safetensors = "0.4"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
