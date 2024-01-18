@@ -1,11 +1,13 @@
 ﻿use super::Arguments;
 use crate::{kernel::slice, tokenizer::utok};
+use half::{bf16, f16};
 use memmap2::Mmap;
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs::File,
     io::{Read, Write},
+    iter::zip,
     ops::Range,
 };
 
@@ -161,145 +163,113 @@ impl SafeTensors {
         }
     }
 
-    pub fn export(&self, stream: &mut dyn Write) -> String {
-        let vocab_size = self.vocab_size();
-        let n_layers = self.n_layers();
-        let dim = self.dim();
-        let kv_dim = self.kv_dim();
-        let hidden_dim = self.hidden_dim();
+    pub fn cast_f32(mut config: File, safetensors: File, stream: &mut dyn Write) -> String {
+        let mut config_string = String::new();
+        config.read_to_string(&mut config_string).unwrap();
+        let config = serde_json::from_str::<LLamaConfig>(&config_string).unwrap();
 
-        let mut meta_json = MetaJson {
-            tensors: HashMap::new(),
-            meta: HashMap::new(),
+        let mmap = unsafe { Mmap::map(&safetensors) }.unwrap();
+        let (len, tail) = mmap.split_at(std::mem::size_of::<u64>());
+        let len = unsafe { *len.as_ptr().cast::<u64>() } as usize;
+        let (meta_json, data) = tail.split_at(len);
+        let MetaJson { tensors, meta } = serde_json::from_slice::<MetaJson>(meta_json).unwrap();
+
+        let mut out_meta = MetaJson {
+            tensors: Default::default(),
+            meta,
         };
-        let tensors = &mut meta_json.tensors;
         let mut range = 0usize..0usize;
 
-        macro_rules! insert {
-            ($vec:expr, $name:expr, $shape:expr) => {
-                range.end += $vec.len() * std::mem::size_of::<f32>();
-                tensors.insert(
-                    $name,
-                    Tensor {
-                        dtype: "F32".to_string(),
-                        shape: $shape,
-                        data_offsets: range.clone(),
-                    },
-                );
-                range.start = range.end;
-            };
+        let order = tensors.keys().collect::<Vec<_>>();
+        for &name in &order {
+            let tensor = &tensors[name];
+            let dtype = match tensor.dtype.as_str() {
+                "F16" | "BF16" => {
+                    range.end += tensor.data_offsets.len() * 2;
+                    "F32"
+                }
+                others => {
+                    range.end += tensor.data_offsets.len();
+                    others
+                }
+            }
+            .to_string();
+            out_meta.tensors.insert(
+                name.clone(),
+                Tensor {
+                    dtype,
+                    shape: tensor.shape.clone(),
+                    data_offsets: range.clone(),
+                },
+            );
+            range.start = range.end;
+            println!("cast: \"{name}\".");
         }
 
-        insert!(
-            self.token_embedding_table,
-            "model.embed_tokens.weight".to_string(),
-            vec![vocab_size, dim]
-        );
-        for l in 0..n_layers {
-            insert!(
-                self.rms_att_weight(l),
-                format!("model.layers.{l}.input_layernorm.weight"),
-                vec![dim]
-            );
-            insert!(
-                self.wq(l),
-                format!("model.layers.{l}.self_attn.q_proj.weight"),
-                vec![dim, dim]
-            );
-            insert!(
-                self.wk(l),
-                format!("model.layers.{l}.self_attn.k_proj.weight"),
-                vec![kv_dim, dim]
-            );
-            insert!(
-                self.wv(l),
-                format!("model.layers.{l}.self_attn.v_proj.weight"),
-                vec![kv_dim, dim]
-            );
-            insert!(
-                self.wo(l),
-                format!("model.layers.{l}.self_attn.o_proj.weight"),
-                vec![dim, dim]
-            );
-            insert!(
-                self.rms_ffn_weight(l),
-                format!("model.layers.{l}.post_attention_layernorm.weight"),
-                vec![dim]
-            );
-            insert!(
-                self.w1(l),
-                format!("model.layers.{l}.mlp.gate_proj.weight"),
-                vec![hidden_dim, dim]
-            );
-            insert!(
-                self.w2(l),
-                format!("model.layers.{l}.mlp.down_proj.weight"),
-                vec![dim, hidden_dim]
-            );
-            insert!(
-                self.w3(l),
-                format!("model.layers.{l}.mlp.up_proj.weight"),
-                vec![hidden_dim, dim]
-            );
-        }
-        insert!(
-            self.rms_final_weight(),
-            "model.norm.weight".to_string(),
-            vec![dim]
-        );
-        insert!(
-            self.wcls(),
-            "lm_head.weight".to_string(),
-            vec![vocab_size, dim]
-        );
-
-        let meta_json = serde_json::to_string(&meta_json).unwrap();
         stream
             .write_all(&(meta_json.len() as u64).to_le_bytes())
             .unwrap();
-        write!(stream, "{}", meta_json).unwrap();
-
-        fn write_slice<T>(stream: &mut dyn Write, slice: &[T]) {
-            let slice = unsafe {
-                std::slice::from_raw_parts(
-                    slice.as_ptr().cast::<u8>(),
-                    slice.len() * std::mem::size_of::<T>(),
-                )
-            };
-            stream.write_all(slice).unwrap();
+        stream
+            .write_all(serde_json::to_string(&out_meta).unwrap().as_bytes())
+            .unwrap();
+        for name in order {
+            let tensor = &tensors[name];
+            let data = &data[tensor.data_offsets.clone()];
+            match tensor.dtype.as_str() {
+                "F16" => {
+                    let mut buf = vec![0u8; tensor.data_offsets.len() * std::mem::size_of::<f32>()];
+                    let src = reslice::<f16>(data);
+                    let dst = reslice_mut::<f32>(&mut buf);
+                    for (dst, src) in zip(dst, src) {
+                        *dst = src.to_f32();
+                    }
+                    stream.write_all(&buf).unwrap();
+                }
+                "BF16" => {
+                    let mut buf = vec![0u8; tensor.data_offsets.len() * std::mem::size_of::<f32>()];
+                    let src = reslice::<bf16>(data);
+                    let dst = reslice_mut::<f32>(&mut buf);
+                    for (dst, src) in zip(dst, src) {
+                        *dst = src.to_f32();
+                    }
+                    stream.write_all(&buf).unwrap();
+                }
+                _ => {
+                    stream.write_all(data).unwrap();
+                }
+            }
+            println!("copied: \"{name}\".");
         }
 
-        write_slice(stream, &self.token_embedding_table);
-        for l in 0..n_layers {
-            write_slice(stream, self.rms_att_weight(l));
-            write_slice(stream, self.wq(l));
-            write_slice(stream, self.wk(l));
-            write_slice(stream, self.wv(l));
-            write_slice(stream, self.wo(l));
-            write_slice(stream, self.rms_ffn_weight(l));
-            write_slice(stream, self.w1(l));
-            write_slice(stream, self.w2(l));
-            write_slice(stream, self.w3(l));
-        }
-        write_slice(stream, self.rms_final_weight());
-        write_slice(stream, self.wcls());
+        serde_json::to_string_pretty(&LLamaConfig {
+            torch_dtype: "F32".to_string(),
+            ..config
+        })
+        .unwrap()
+    }
+}
 
-        serde_json::to_string_pretty(&self.config).unwrap()
+#[inline]
+fn reslice<T>(slice: &[u8]) -> &[T] {
+    unsafe {
+        std::slice::from_raw_parts(
+            slice.as_ptr().cast(),
+            slice.len() / std::mem::size_of::<T>(),
+        )
+    }
+}
+
+#[inline]
+fn reslice_mut<T>(slice: &mut [u8]) -> &mut [T] {
+    unsafe {
+        std::slice::from_raw_parts_mut(
+            slice.as_mut_ptr().cast(),
+            slice.len() / std::mem::size_of::<T>(),
+        )
     }
 }
 
 fn cast_slice<'a>(dtype: &str, slice: &'a [u8]) -> Cow<'a, [f32]> {
-    #[inline]
-    fn reslice<T>(slice: &[u8]) -> &[T] {
-        unsafe {
-            std::slice::from_raw_parts(
-                slice.as_ptr().cast(),
-                slice.len() / std::mem::size_of::<T>(),
-            )
-        }
-    }
-
-    use half::{bf16, f16};
     match dtype {
         "F32" => Cow::Borrowed(reslice(slice)),
         "F16" => Cow::Owned(
@@ -398,6 +368,9 @@ impl Arguments for SafeTensors {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct LLamaConfig {
+    bos_token_id: utok,
+    eos_token_id: utok,
+
     hidden_size: usize,
     intermediate_size: usize,
     max_position_embeddings: usize,
@@ -405,14 +378,15 @@ struct LLamaConfig {
     num_hidden_layers: usize,
     num_key_value_heads: usize,
     vocab_size: usize,
+
+    torch_dtype: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct MetaJson {
     #[serde(flatten)]
-    tensors: HashMap<String, Tensor>,
+    tensors: BTreeMap<String, Tensor>,
     #[serde(rename = "__metadata__")]
-    #[allow(dead_code)]
     meta: HashMap<String, serde_json::Value>,
 }
 
