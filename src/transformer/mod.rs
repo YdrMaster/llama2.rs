@@ -4,7 +4,10 @@ use super::{
     kernel::{gemm, rmsnorm, rmsnorm_inplace, sigmoid, slice, softmax},
     tokenizer::utok,
 };
-use crate::arguments::{AllInOneBin, Arguments, SafeTensors};
+use crate::{
+    arguments::{AllInOneBin, Arguments, SafeTensors},
+    log::Logger,
+};
 use state::{Layer, RotaryEmbedder, RunState};
 use std::{ffi::OsStr, fs::File, iter::zip, path::Path};
 
@@ -50,7 +53,7 @@ impl Transformer {
         self.arguments.vocab_size()
     }
 
-    pub fn update(&mut self, tokens: &[utok], pos: upos) -> Vec<f32> {
+    pub fn update(&mut self, tokens: &[utok], pos: upos, logger: &mut impl Logger) -> Vec<f32> {
         let tok_len = tokens.len();
         let pos = pos as usize;
 
@@ -66,6 +69,8 @@ impl Transformer {
 
         let mut s = RunState::new(tok_len, dim, hidden_dim, n_head, seq_len);
         let h = s.hidden.split_at_mut(tok_len * hidden_dim);
+
+        logger.log(&format!("update_pos={pos}_tokens"), tokens, &[tokens.len()]);
 
         for (i, &token) in tokens.iter().enumerate() {
             slice!(s.x0; dim; [i]).copy_from_slice(self.arguments.token_embedding_table(token));
@@ -231,8 +236,8 @@ impl Transformer {
         s.x0
     }
 
-    pub fn forward(&mut self, token: utok, pos: upos) -> &mut [f32] {
-        let mut x = self.update(&[token], pos);
+    pub fn forward(&mut self, token: utok, pos: upos, logger: &mut impl Logger) -> &mut [f32] {
+        let mut x = self.update(&[token], pos, logger);
 
         rmsnorm_inplace(&mut x, self.arguments.rms_final_weight());
         // logits = wcls * x;
