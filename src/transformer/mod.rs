@@ -182,7 +182,7 @@ impl Transformer {
                 let rsb = 1;
                 let csb = seq_len as _;
                 let rsc = 1;
-                let csc = kv_dim as _;
+                let csc = dim as _;
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
 

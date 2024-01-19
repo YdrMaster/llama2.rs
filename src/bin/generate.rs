@@ -1,11 +1,14 @@
 use core::panic;
-use llama2_rs::{FsLogger, Sampler, Tokenizer, Transformer, BOS};
+use llama2_rs::{Sampler, Tokenizer, Transformer, BOS};
 use std::{
     fs::canonicalize,
     io::Write,
     path::PathBuf,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+
+#[allow(unused_imports)]
+use llama2_rs::FsLogger;
 
 fn main() {
     struct Args {
@@ -121,11 +124,11 @@ fn generate(
     let start = Instant::now();
 
     // 一次性输入提示词的所有 token
-    // transformer.update(tokens, 0);
+    transformer.update(tokens, 0, &mut logger);
     // 一个一个输入提示词的 token 但不计算 output
-    for (i, &t) in tokens.iter().enumerate() {
-        transformer.update(&[t], i as _, &mut logger);
-    }
+    // for (i, &t) in tokens.iter().enumerate() {
+    //     transformer.update(&[t], i as _, &mut logger);
+    // }
     // 一个一个输入提示词的 token 并计算 output
     // for (i, &t) in tokens.iter().enumerate() {
     //     let _ = transformer.forward(t, i as _);
