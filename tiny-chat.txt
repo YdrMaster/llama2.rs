@@ -1,0 +1,5 @@
+<|system|>
+You are a friendly chatbot who always responds in the style of a pirate</s>
+<|user|>
+How many helicopters can a human eat in one sitting?</s>
+<|assistant|>

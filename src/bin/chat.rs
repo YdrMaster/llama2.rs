@@ -1,10 +1,10 @@
 use core::panic;
-use llama2_rs::{Sampler, Tokenizer, Transformer, BOS};
+use llama2_rs::{Sampler, Tokenizer, Transformer, BOS, EOS};
 use std::{
     fs::canonicalize,
     io::Write,
     path::PathBuf,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[allow(unused_imports)]
@@ -17,7 +17,7 @@ fn main() {
         temperature: f32,
         top_p: f32,
         steps: usize,
-        prompt: String,
+        system: String,
         rng_seed: u64,
     }
 
@@ -33,7 +33,7 @@ fn main() {
         temperature: 1.0,
         top_p: 0.9,
         steps: 256,
-        prompt: String::new(),
+        system: String::new(),
         rng_seed: 0,
     };
     loop {
@@ -50,8 +50,8 @@ fn main() {
             Some(s) if s == "--steps" => {
                 args.steps = process_args.next().expect(USAGE_HELP).parse().unwrap();
             }
-            Some(s) if s == "--prompt" => {
-                args.prompt = process_args.next().expect(USAGE_HELP);
+            Some(s) if s == "--system" => {
+                args.system = process_args.next().expect(USAGE_HELP);
             }
             Some(s) if s == "--rng-seed" => {
                 args.rng_seed = process_args.next().expect(USAGE_HELP).parse().unwrap();
@@ -73,10 +73,10 @@ fn main() {
     if !(0.0..1.0).contains(&args.top_p) {
         args.top_p = 0.9;
     }
-    if args.prompt.ends_with(".txt") {
-        let path = PathBuf::from(&args.prompt);
+    if args.system.ends_with(".txt") {
+        let path = PathBuf::from(&args.system);
         if path.is_file() {
-            args.prompt = std::fs::read_to_string(path).unwrap();
+            args.system = std::fs::read_to_string(path).unwrap();
         }
     }
 
@@ -89,11 +89,11 @@ fn main() {
         args.rng_seed,
     );
 
-    generate(
+    chat(
         &mut transformer,
         &tokenizer,
         &mut sampler,
-        args.prompt,
+        args.system,
         args.steps,
     );
 }
@@ -105,61 +105,70 @@ Options:
      --temperature <float>
      --top-p <float>
      --steps <int>
-     --prompt <string>
+     --system <string>
      --rng-seed <int>
 ";
 
-fn generate(
+fn chat(
     transformer: &mut Transformer,
     tokenizer: &Tokenizer,
     sampler: &mut Sampler,
-    prompt: String,
+    system: String,
     steps: usize,
 ) {
-    let prompt = prompt.trim();
-    let prompt_tokens = tokenizer.encode(prompt, true, false);
-    let (last, tokens) = prompt_tokens.split_last().unwrap();
-
     let mut logger = ();
-    let start = Instant::now();
+    let system = format!(
+        "\
+<|system|>
+{}</s>
+",
+        system.trim()
+    );
 
-    // 一次性输入提示词的所有 token
-    transformer.update(tokens, 0, &mut logger);
-    // 一个一个输入提示词的 token 但不计算 output
-    // for (i, &t) in tokens.iter().enumerate() {
-    //     transformer.update(&[t], i as _, &mut logger);
-    // }
-    // 一个一个输入提示词的 token 并计算 output
-    // for (i, &t) in tokens.iter().enumerate() {
-    //     let _ = transformer.forward(t, i as _);
-    // }
+    let system_tokens = tokenizer.encode(&system, true, false);
+    transformer.update(&system_tokens, 0, &mut logger);
 
-    print!("{prompt}");
+    let mut pos = system_tokens.len();
+    loop {
+        let mut user = String::new();
+        print!("user: ");
+        std::io::stdout().flush().unwrap();
+        std::io::stdin().read_line(&mut user).unwrap();
+        let addition = format!(
+            "\
+<|user|>
+{}</s>
+<|assistant|>
+",
+            user.trim()
+        );
+        let addition_tokens = tokenizer.encode(&addition, false, false);
+        let (last, tokens) = addition_tokens.split_last().unwrap();
+        transformer.update(&addition_tokens, pos as _, &mut logger);
+        pos += tokens.len();
 
-    let mid = Instant::now();
-
-    let mut pos = tokens.len();
-    let mut token = *last;
-    while pos < steps {
-        let logits = transformer.forward(token, pos as _, &mut logger);
-        let next = sampler.sample(logits);
-        pos += 1;
-
-        if next == BOS {
-            break;
-        }
-
-        print!("{}", tokenizer.decode(token, next));
+        print!("assistant: ");
         std::io::stdout().flush().unwrap();
 
-        token = next;
-    }
+        let mut token = *last;
+        while pos < steps {
+            let logits = transformer.forward(token, pos as _, &mut logger);
+            let next = sampler.sample(logits);
+            pos += 1;
 
-    let end = Instant::now();
-    println!();
-    println!("init time: {:?}", mid - start);
-    println!(
-        "achieved tok/s: {}",
-        pos as f64 / (end - start).as_secs_f64()
-    );
+            if next == BOS {
+                return;
+            }
+
+            print!("{}", tokenizer.decode(token, next));
+            std::io::stdout().flush().unwrap();
+
+            if next == EOS {
+                break;
+            }
+
+            token = next;
+        }
+        println!();
+    }
 }
