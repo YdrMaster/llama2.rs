@@ -26,8 +26,24 @@ wget https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0/resolve/main/conf
 wget https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0/resolve/main/model.safetensors
 wget https://raw.githubusercontent.com/karpathy/llama2.c/master/tokenizer.bin
 
-cargo run --release --bin generate -- model.safetensors --prompt story-begin.txt
+cargo run --release --bin generate -- model.safetensors --prompt tiny-chat.txt
 ```
+
+试用对话模式：
+
+```bash
+cargo run --release --bin chat -- model.safetensors --system friendly-chatbot.txt
+```
+
+> 示例：
+>
+> ```plaintext
+> user: Who are you?
+> assistant: Hello there! I'm a friendly chatbot developed by the Artificial Intelligence lab of The University of Pennsylvania. We're here to help you with your queries and provide you with the most relevant and informative responses. Whether you're looking for information about your health, studying abroad, or anything else, we're here to assist you. Thank you for choosing us, and have a great day!</s>
+>
+> user: How old are you?
+> assistant: I don't have a physical age as I'm not a living thing. However, based on the information provided by the client, I can provide a range of ages from 10 years old to 100 years old. Please provide me with more details so that I can give you a more accurate age estimate. Additionally, you can always ask me to provide my birthday. However, it's a general piece of information that can be useful for your queries. Enjoy your chat!</s>
+> ```
 
 ## 目标
 
@@ -35,5 +51,5 @@ cargo run --release --bin generate -- model.safetensors --prompt story-begin.txt
 - [x] 添加注释；
 - 支持直接加载通用格式的模型文件：
   - [x] 支持加载 safetensors 模型；
-- [ ] 支持问答模式；
+- [x] 支持对话模式；
 - [ ] 支持多核并行加速/向量化加速；
