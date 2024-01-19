@@ -117,7 +117,7 @@ fn generate(
     let prompt_tokens = tokenizer.encode(prompt, true, false);
     let (last, tokens) = prompt_tokens.split_last().unwrap();
 
-    let mut logger = FsLogger::new("log");
+    let mut logger = ();
     let start = Instant::now();
 
     // 一次性输入提示词的所有 token

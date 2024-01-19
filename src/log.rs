@@ -1,12 +1,12 @@
 ﻿use crate::kernel::slice;
-use std::{fmt::Display, fs::File, io::Write, path::PathBuf};
+use std::{fmt::Display, fs::File, io::Write, ops::Add, path::PathBuf};
 
 pub trait Logger {
-    fn log<T: Display>(&mut self, title: &str, buf: &[T], shape: &[usize]);
+    fn log<T: Display>(&mut self, title: &[&str], buf: &[T], shape: &[usize]);
 }
 
 impl Logger for () {
-    fn log<T: Display>(&mut self, _: &str, _: &[T], _: &[usize]) {}
+    fn log<T: Display>(&mut self, _: &[&str], _: &[T], _: &[usize]) {}
 }
 
 pub struct FsLogger(PathBuf);
@@ -25,13 +25,9 @@ impl FsLogger {
 }
 
 impl Logger for FsLogger {
-    fn log<T: Display>(&mut self, title: &str, buf: &[T], shape: &[usize]) {
-        write_log(
-            &mut File::create(self.0.join(format!("{}.log", title))).unwrap(),
-            buf,
-            shape,
-        )
-        .unwrap();
+    fn log<T: Display>(&mut self, title: &[&str], buf: &[T], shape: &[usize]) {
+        let path = self.0.join(title.join("_").add(".log"));
+        write_log(&mut File::create(path).unwrap(), buf, shape).unwrap();
     }
 }
 
@@ -87,7 +83,7 @@ fn write_matrix<T: Display>(
     for r in 0..rows {
         let row = &slice!(buf; cols; [r]);
         for it in row {
-            write!(to, "{it:>6.3} ")?;
+            write!(to, "{it:>9.6} ")?;
         }
         writeln!(to)?;
     }

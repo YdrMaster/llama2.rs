@@ -28,7 +28,7 @@ impl RunState {
             x1: vec![0.; tok_len * dim],
             q: vec![0.; tok_len * dim],
             hidden: vec![0.; tok_len * hidden_dim * 2],
-            attention: vec![0.; tok_len * n_heads * seq_len],
+            attention: vec![0.; n_heads * tok_len * seq_len],
         }
     }
 }
