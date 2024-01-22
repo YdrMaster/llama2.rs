@@ -1,6 +1,7 @@
 use core::panic;
 use llama2_rs::{Sampler, Tokenizer, Transformer, BOS, EOS};
 use std::{
+    collections::VecDeque,
     fs::canonicalize,
     io::Write,
     path::PathBuf,
@@ -16,7 +17,6 @@ fn main() {
         tokenizer_path: PathBuf,
         temperature: f32,
         top_p: f32,
-        steps: usize,
         system: String,
         rng_seed: u64,
     }
@@ -32,7 +32,6 @@ fn main() {
         tokenizer_path: canonicalize("tokenizer.bin").unwrap(),
         temperature: 1.0,
         top_p: 0.9,
-        steps: 256,
         system: String::new(),
         rng_seed: 0,
     };
@@ -46,9 +45,6 @@ fn main() {
             }
             Some(s) if s == "--top-p" => {
                 args.top_p = process_args.next().expect(USAGE_HELP).parse().unwrap();
-            }
-            Some(s) if s == "--steps" => {
-                args.steps = process_args.next().expect(USAGE_HELP).parse().unwrap();
             }
             Some(s) if s == "--system" => {
                 args.system = process_args.next().expect(USAGE_HELP);
@@ -89,13 +85,7 @@ fn main() {
         args.rng_seed,
     );
 
-    chat(
-        &mut transformer,
-        &tokenizer,
-        &mut sampler,
-        args.system,
-        args.steps,
-    );
+    chat(&mut transformer, &tokenizer, &mut sampler, args.system);
 }
 
 const USAGE_HELP: &str = "\
@@ -104,7 +94,6 @@ Options:
      --tokenizer-path <string>
      --temperature <float>
      --top-p <float>
-     --steps <int>
      --system <string>
      --rng-seed <int>
 ";
@@ -114,7 +103,6 @@ fn chat(
     tokenizer: &Tokenizer,
     sampler: &mut Sampler,
     system: String,
-    steps: usize,
 ) {
     let mut logger = ();
     let system = format!(
@@ -147,27 +135,54 @@ fn chat(
         transformer.update(&addition_tokens, pos as _, &mut logger);
         pos += tokens.len();
 
-        print!("assistant: ");
+        print!("assistant: (pos = {pos}) ");
         std::io::stdout().flush().unwrap();
 
         let mut token = *last;
-        while pos < steps {
+        let mut buffer = VecDeque::<char>::new();
+        loop {
             let logits = transformer.forward(token, pos as _, &mut logger);
-            let next = sampler.sample(logits);
             pos += 1;
 
-            if next == BOS {
-                return;
+            match sampler.sample(logits) {
+                BOS => return,
+                EOS => {
+                    token = EOS;
+                    buffer.extend("</s>".chars());
+                }
+                next => {
+                    let piece = tokenizer.decode(token, next);
+                    token = next;
+                    buffer.extend(piece.chars());
+                }
             }
 
-            print!("{}", tokenizer.decode(token, next));
-            std::io::stdout().flush().unwrap();
-
-            if next == EOS {
-                break;
+            {
+                let mut eos = false;
+                let words = buffer.iter().collect::<String>();
+                let words = if let Some((words, _)) = words.split_once("</s") {
+                    eos = true;
+                    words
+                } else {
+                    &words
+                };
+                let words = if let Some((words, _)) = words.split_once("<|") {
+                    eos = true;
+                    words
+                } else {
+                    &words
+                };
+                if eos {
+                    print!("{words} [end]");
+                    std::io::stdout().flush().unwrap();
+                    break;
+                } else {
+                    while buffer.len() > 3 {
+                        print!("{}", buffer.pop_front().unwrap());
+                        std::io::stdout().flush().unwrap();
+                    }
+                }
             }
-
-            token = next;
         }
         println!();
     }
