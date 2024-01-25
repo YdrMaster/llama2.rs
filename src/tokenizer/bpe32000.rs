@@ -1,17 +1,10 @@
-﻿use memmap2::Mmap;
+﻿use super::{utok, Tokenizer, BOS, EOS};
+use memmap2::Mmap;
 use std::{fs::File, path::Path};
 
-/// `utok` for token id.
-#[allow(non_camel_case_types)]
-pub(super) type utok = u32;
-
-pub const _UNKNOWN: utok = 0;
-pub const BOS: utok = 1;
-pub const EOS: utok = 2;
-
-/// Tokenizer 的功能是建立 token 字符串和一个序号之间的关系。
-pub struct Tokenizer {
-    /// tokenizer 文件的内存映射。
+/// Bpe32000 的功能是建立 token 字符串和一个序号之间的关系。
+pub struct BpeTokenizer {
+    /// Bpe32000 文件的内存映射。
     mmap: Mmap,
     /// 保存每个序号对应的对象在文件中的偏移，用于从序号查询 token 字符串。
     words_offset: Vec<usize>,
@@ -20,7 +13,7 @@ pub struct Tokenizer {
     byte_pieces: [u8; 256],
 }
 
-impl Tokenizer {
+impl BpeTokenizer {
     pub fn new(tokenizer: impl AsRef<Path>, vocab_size: usize) -> Self {
         let mmap = unsafe { Mmap::map(&File::open(tokenizer).unwrap()) }.unwrap();
 
@@ -34,7 +27,7 @@ impl Tokenizer {
                 offset += file::item_len(&mmap, offset);
             }
         }
-        sorted_indices.sort_by_key(|&index| file::map(&mmap, words_offset[index as usize]).0);
+        sorted_indices.sort_by_key(|&idx| file::map(&mmap, words_offset[idx as usize]).0);
 
         let mut ans = Self {
             mmap,
@@ -54,7 +47,22 @@ impl Tokenizer {
         (unsafe { *self.mmap.as_ptr().cast::<u32>() }) as _
     }
 
-    pub fn encode(&self, text: &str, bos: bool, eos: bool) -> Vec<utok> {
+    #[inline]
+    fn find_token(&self, token: &str) -> Option<utok> {
+        self.sorted_indices
+            .binary_search_by_key(&token, |&index| self.map_str(index))
+            .ok()
+            .map(|idx| self.sorted_indices[idx])
+    }
+
+    #[inline]
+    fn map_str(&self, index: utok) -> &str {
+        file::map(&self.mmap, self.words_offset[index as usize]).0
+    }
+}
+
+impl Tokenizer for BpeTokenizer {
+    fn encode(&self, text: &str, bos: bool, eos: bool) -> Vec<utok> {
         #[inline(always)]
         const fn byte_index(b: u8) -> utok {
             b as utok + 3
@@ -107,7 +115,7 @@ impl Tokenizer {
         tokens
     }
 
-    pub fn decode(&self, token: utok, next: utok) -> &str {
+    fn decode(&self, token: utok, next: utok) -> &str {
         let piece = self.map_str(next);
         if let Some(byte) = piece.strip_prefix("<0x").and_then(|s| s.strip_suffix('>')) {
             let byte = u8::from_str_radix(byte, 16).unwrap();
@@ -118,19 +126,6 @@ impl Tokenizer {
         } else {
             piece
         }
-    }
-
-    #[inline]
-    fn find_token(&self, token: &str) -> Option<utok> {
-        self.sorted_indices
-            .binary_search_by_key(&token, |&index| self.map_str(index))
-            .ok()
-            .map(|idx| self.sorted_indices[idx])
-    }
-
-    #[inline]
-    fn map_str(&self, index: utok) -> &str {
-        file::map(&self.mmap, self.words_offset[index as usize]).0
     }
 }
 

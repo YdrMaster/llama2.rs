@@ -1,5 +1,5 @@
 use core::panic;
-use llama2_rs::{Sampler, Tokenizer, Transformer, BOS, EOS};
+use llama2_rs::{BpeTokenizer, Sampler, Tokenizer, Transformer, BOS, EOS};
 use std::{
     collections::VecDeque,
     fs::canonicalize,
@@ -76,8 +76,8 @@ fn main() {
         }
     }
 
-    let mut transformer = Transformer::read_checkpoint(&args.check_point);
-    let tokenizer = Tokenizer::new(&args.tokenizer_path, transformer.vocab_size());
+    let mut transformer: Transformer = Transformer::read_checkpoint(&args.check_point);
+    let tokenizer = BpeTokenizer::new(&args.tokenizer_path, transformer.vocab_size());
     let mut sampler = Sampler::new(
         transformer.vocab_size(),
         args.temperature,
@@ -100,7 +100,7 @@ Options:
 
 fn chat(
     transformer: &mut Transformer,
-    tokenizer: &Tokenizer,
+    tokenizer: &impl Tokenizer,
     sampler: &mut Sampler,
     system: String,
 ) {
