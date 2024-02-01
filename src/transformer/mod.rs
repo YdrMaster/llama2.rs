@@ -141,7 +141,6 @@ impl Transformer {
                 &[seq_len, kv_dim],
             );
             // clear x1 for multi-head attention.
-            s.x1.fill(0.);
             for h in 0..n_head {
                 let att = &mut slice!(s.attention; tok_len * seq_len; [h]);
                 let att_len = pos + tok_len;
@@ -168,12 +167,12 @@ impl Transformer {
                     softmax(att);
                     tail.fill(0.);
                 }
-                // x1 += att * v;
+                // x1 = att * v;
                 let m = head_size;
                 let k = att_len;
                 let n = tok_len;
                 let alpha = 1.;
-                let beta = 1.;
+                let beta = 0.;
                 let a = slice!(v_cache; head_size; [h / kv_mul]).as_ptr();
                 let b = att.as_ptr();
                 let c = slice!(s.x1; head_size; [h]).as_mut_ptr();
