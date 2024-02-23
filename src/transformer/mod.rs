@@ -71,12 +71,12 @@ impl Transformer {
         let h = s.hidden.split_at_mut(tok_len * hidden_dim);
 
         let log_prefix = format!("update_pos={pos}");
-        logger.log(&[&log_prefix, "tokens"], tokens, &[tok_len]);
+        // logger.log(&[&log_prefix, "tokens"], tokens, &[tok_len]);
 
         for (i, &token) in tokens.iter().enumerate() {
             slice!(s.x0; dim; [i]).copy_from_slice(self.arguments.token_embedding_table(token));
         }
-        logger.log(&[&log_prefix, "embedding"], &s.x0, &[tok_len, dim]);
+        // logger.log(&[&log_prefix, "embedding"], &s.x0, &[tok_len, dim]);
 
         for (l, layer) in self.layers.iter_mut().enumerate() {
             let Layer { k_cache, v_cache } = layer;
@@ -85,11 +85,11 @@ impl Transformer {
 
             // x1 = rmsnorm(x0, rms_att_weight[l]);
             rmsnorm(&mut s.x1, &s.x0, self.arguments.rms_att_weight(l));
-            logger.log(
-                &[&log_prefix, &log_layer, "input_rmsnorm"],
-                &s.x1,
-                &[tok_len, dim],
-            );
+            // logger.log(
+            //     &[&log_prefix, &log_layer, "input_rmsnorm"],
+            //     &s.x1,
+            //     &[tok_len, dim],
+            // );
             {
                 let k = dim;
                 let n = tok_len;
@@ -107,7 +107,7 @@ impl Transformer {
                 let a = self.arguments.wq(l).as_ptr();
                 let c = s.q.as_mut_ptr();
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
-                logger.log(&[&log_prefix, &log_layer, "q"], &s.q, &[tok_len, dim]);
+                // logger.log(&[&log_prefix, &log_layer, "q"], &s.q, &[tok_len, dim]);
                 // k = wk[l] * x1;
                 let m = kv_dim;
                 let rsa = k as _;
@@ -117,12 +117,12 @@ impl Transformer {
                 let a = self.arguments.wk(l).as_ptr();
                 let c = slice!(k_cache; kv_dim; [pos]).as_mut_ptr();
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
-                logger.log(&[&log_prefix, &log_layer, "k"], k_cache, &[seq_len, kv_dim]);
+                // logger.log(&[&log_prefix, &log_layer, "k"], k_cache, &[seq_len, kv_dim]);
                 // v = wv[l] * x1;
                 let a = self.arguments.wv(l).as_ptr();
                 let c = slice!(v_cache; kv_dim; [pos]).as_mut_ptr();
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
-                logger.log(&[&log_prefix, &log_layer, "v"], v_cache, &[seq_len, kv_dim]);
+                // logger.log(&[&log_prefix, &log_layer, "v"], v_cache, &[seq_len, kv_dim]);
             }
             // rotary embeddings
             for i in 0..tok_len {
@@ -130,16 +130,16 @@ impl Transformer {
                 self.embedder.run(pos, &mut slice!(s.q    ; dim   ; [i]  ));
                 self.embedder.run(pos, &mut slice!(k_cache; kv_dim; [pos]));
             }
-            logger.log(
-                &[&log_prefix, &log_layer, "rotary_q"],
-                &s.q,
-                &[tok_len, dim],
-            );
-            logger.log(
-                &[&log_prefix, &log_layer, "rotary_k"],
-                &k_cache,
-                &[seq_len, kv_dim],
-            );
+            // logger.log(
+            //     &[&log_prefix, &log_layer, "rotary_q"],
+            //     &s.q,
+            //     &[tok_len, dim],
+            // );
+            // logger.log(
+            //     &[&log_prefix, &log_layer, "rotary_k"],
+            //     &k_cache,
+            //     &[seq_len, kv_dim],
+            // );
             // clear x1 for multi-head attention.
             for h in 0..n_head {
                 let att = &mut slice!(s.attention; tok_len * seq_len; [h]);
@@ -184,7 +184,11 @@ impl Transformer {
                 let csc = dim as _;
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
-
+            // logger.log(
+            //     &[&log_prefix, &log_layer, "after_attention"],
+            //     &s.x1,
+            //     &[tok_len, dim],
+            // );
             // x0 += wo[l] * x1;
             {
                 let m = dim;
@@ -203,8 +207,14 @@ impl Transformer {
                 let csc = m as _;
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
+            // logger.log(&[&log_prefix, &log_layer, "o"], &s.x0, &[tok_len, dim]);
             // x1 = rmsnorm(x0, rms_ffn_weight[l]);
             rmsnorm(&mut s.x1, &s.x0, self.arguments.rms_ffn_weight(l));
+            // logger.log(
+            //     &[&log_prefix, &log_layer, "post_norm"],
+            //     &s.x1,
+            //     &[tok_len, dim],
+            // );
             {
                 let m = hidden_dim;
                 let k = dim;
@@ -222,13 +232,28 @@ impl Transformer {
                 let a = self.arguments.w1(l).as_ptr();
                 let c = h.0.as_mut_ptr();
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
+                // logger.log(
+                //     &[&log_prefix, &log_layer, "gate"],
+                //     h.0,
+                //     &[tok_len, hidden_dim],
+                // );
                 // h1 = w3[l] * x1;
                 let a = self.arguments.w3(l).as_ptr();
                 let c = h.1.as_mut_ptr();
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
+                // logger.log(
+                //     &[&log_prefix, &log_layer, "up"],
+                //     h.1,
+                //     &[tok_len, hidden_dim],
+                // );
             }
             // h0 *= sigmoid(h0) * h1;
             zip(&mut *h.0, &*h.1).for_each(|(h0, h1)| *h0 *= sigmoid(*h0) * *h1);
+            // logger.log(
+            //     &[&log_prefix, &log_layer, "swiglu"],
+            //     h.0,
+            //     &[tok_len, hidden_dim],
+            // );
             // x0 += w2[l] * h0;
             {
                 let m = dim;
@@ -247,6 +272,11 @@ impl Transformer {
                 let csc = m as _;
                 unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
             }
+            // logger.log(
+            //     &[&log_prefix, &log_layer, "mlp_down"],
+            //     &s.x0,
+            //     &[tok_len, dim],
+            // );
         }
 
         s.x0
@@ -255,7 +285,11 @@ impl Transformer {
     pub fn forward(&mut self, token: utok, pos: upos, logger: &mut impl Logger) -> &mut [f32] {
         let mut x = self.update(&[token], pos, logger);
 
+        let log_prefix = format!("forward_pos={pos}");
+
         rmsnorm_inplace(&mut x, self.arguments.rms_final_weight());
+        // logger.log(&[&log_prefix, "model_norm"], &x, &[self.arguments.dim()]);
+
         // logits = wcls * x;
         {
             let m = self.logits.len();
@@ -274,6 +308,7 @@ impl Transformer {
             let csc = m as _;
             unsafe { gemm(m, k, n, alpha, a, rsa, csa, b, rsb, csb, beta, c, rsc, csc) };
         }
+        // logger.log(&[&log_prefix, "logits"], &self.logits, &[self.vocab_size()]);
 
         &mut self.logits
     }
