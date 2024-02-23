@@ -1,5 +1,7 @@
 ﻿# llama2.rs
 
+> 此项目已重构为 [transformer](https://github.com/YdrMaster/transformer)。新项目提供一个精心设计的张量定义，以加速大模型推理程序开发。cuda 版本也将在新项目上开发。
+
 手写 llama2 推理实现，基于 **[karpathy/llama2.c](https://github.com/karpathy/llama2.c)**，但：
 
 - 支持直接加载 safetensors 格式的模型；
